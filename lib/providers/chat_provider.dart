@@ -5,18 +5,23 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/chat_message.dart';
 import '../services/audio_service.dart';
 
 class ChatProvider extends ChangeNotifier {
   static const String _apiUrl = 'https://anuanbu1-1-6gjqaydwd067dbb1-1421679372.ap-shanghai.app.tcloudbase.com/api';
   
+  // 本地已读消息ID的存储key前缀（按用户区分，解决每次登录重复响铃问题）
+  static const String _readIdsKey = 'chat_read_msg_ids_';
+
   final List<ChatMessage> _messages = [];
   final Map<String, List<ChatMessage>> _conversationMessages = {};
   Timer? _pollTimer;
   bool _isLoading = false;
   bool _isSending = false;
   String? _error;
+  Set<String> _localReadIds = {};   // 本地已读消息ID（持久化，避免重复响铃）
   
   // 新消息通知回调（UI层注册，收到新催办/隐患通知时触发弹窗）
   Function(ChatMessage)? onNewNotification;
@@ -41,6 +46,10 @@ class ChatProvider extends ChangeNotifier {
     
     _currentUserId = userId;
     _currentUserName = userName;
+    
+    // 加载本地已读消息ID（持久化，避免下次登录重复响铃）
+    _loadLocalReadIds();
+    
     notifyListeners();
     
     // 用户切换时，立即拉取离线消息
@@ -148,6 +157,7 @@ class ChatProvider extends ChangeNotifier {
           notifyListeners();
           
           // 播放新消息提示音 - 每条消息都分别响一下
+          // 关键修复：已通过 shared_preferences 标记为已读的消息不响铃
           if (newCount > 0) {
             print('🔔 收到 $newCount 条新消息，播放提示音');
             
@@ -155,7 +165,8 @@ class ChatProvider extends ChangeNotifier {
             for (var msg in result) {
               if (!existingIds.contains(msg.id) && 
                   !msg.id.startsWith('temp_') &&
-                  msg.toUserId == _currentUserId) {
+                  msg.toUserId == _currentUserId &&
+                  !_localReadIds.contains(msg.id)) {  // 关键修复：本地已读的不响
                 // 隐患/催办通知使用警告音，普通消息使用普通提示音
                 if (msg.type == MessageType.issueNotify || 
                     msg.type == MessageType.reminder) {
@@ -340,6 +351,10 @@ class ChatProvider extends ChangeNotifier {
         }
       }
       
+      // 关键修复：把已读消息ID持久化到本地，下次登录不再响铃
+      _localReadIds.add(messageId);
+      await _saveLocalReadIds();
+      
       notifyListeners();
       
       // 再调用API同步到云端（用 _id 查询云端记录）
@@ -361,6 +376,31 @@ class ChatProvider extends ChangeNotifier {
     }
   }
   
+  /// 从本地存储加载已读消息ID
+  Future<void> _loadLocalReadIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = '$_readIdsKey$_currentUserId';
+      final ids = prefs.getStringList(key) ?? [];
+      _localReadIds = ids.toSet();
+      print('📖 已加载 ${_localReadIds.length} 条本地已读记录 (user=$_currentUserId)');
+    } catch (e) {
+      print('⚠️ 加载本地已读记录失败: $e');
+      _localReadIds = {};
+    }
+  }
+  
+  /// 保存已读消息ID到本地存储
+  Future<void> _saveLocalReadIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = '$_readIdsKey$_currentUserId';
+      await prefs.setStringList(key, _localReadIds.toList());
+    } catch (e) {
+      print('⚠️ 保存本地已读记录失败: $e');
+    }
+  }
+
   /// 标记所有消息已读
   Future<void> markAllAsRead() async {
     final unreadMessages = _messages.where((m) => !m.isRead && m.toUserId == _currentUserId).toList();
@@ -370,7 +410,11 @@ class ChatProvider extends ChangeNotifier {
   }
   
   int getUnreadCount() {
-    return _messages.where((m) => !m.isRead && m.toUserId == _currentUserId).length;
+    return _messages.where((m) =>
+      !m.isRead &&
+      !_localReadIds.contains(m.id) &&
+      m.toUserId == _currentUserId
+    ).length;
   }
 
   /// 获取所有催办/隐患通知，每条单独一行（显示所有记录）
@@ -385,12 +429,13 @@ class ChatProvider extends ChangeNotifier {
 
     // 每条催办记录单独一个会话，不过滤不合并
     return reminders.map((msg) {
+      final isLocallyRead = _localReadIds.contains(msg.id);
       return ChatSession(
         odId: msg.fromUserId,
         odUserName: msg.fromUserName,
         odDisplayName: msg.fromUserName,
         lastMessage: msg,
-        unreadCount: msg.isRead ? 0 : 1,
+        unreadCount: (msg.isRead || isLocallyRead) ? 0 : 1,
         updatedAt: msg.createdAt,
       );
     }).toList();

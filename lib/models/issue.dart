@@ -313,9 +313,9 @@ class Issue {
     DateTime deadline;
     try {
       final dl = json['deadline'] ?? json['dueDate'] ?? json['createdAt'];
-      deadline = dl != null ? DateTime.parse(dl.toString()) : DateTime.now().add(const Duration(days: 7));
+      deadline = dl != null ? DateTime.parse(dl.toString()) : DateTime.now().add(const Duration(days: 3));
     } catch (_) {
-      deadline = DateTime.now().add(const Duration(days: 7));
+      deadline = DateTime.now().add(const Duration(days: 3));
     }
 
     // 解析 createdAt

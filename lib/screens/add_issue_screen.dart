@@ -31,7 +31,7 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
   
   models.IssueCategory _selectedCategory = models.IssueCategory.wastewater;
   models.SeverityLevel _selectedSeverity = models.SeverityLevel.general;
-  DateTime _deadline = DateTime.now().add(const Duration(days: 7));
+  DateTime _deadline = DateTime.now().add(const Duration(days: 3));
   
   // 部门列表（基础+云端动态）
   List<String> _departments = [
@@ -1495,6 +1495,30 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
                     '${_deadline.year}-${_deadline.month.toString().padLeft(2, '0')}-${_deadline.day.toString().padLeft(2, '0')}',
                   ),
                 ),
+              ),
+              const SizedBox(height: 8),
+              // 快捷选择整改天数
+              Wrap(
+                spacing: 8,
+                children: [1, 3, 7, 15, 30].map((days) {
+                  final isSelected = _deadline.year == DateTime.now().add(Duration(days: days)).year &&
+                      _deadline.month == DateTime.now().add(Duration(days: days)).month &&
+                      _deadline.day == DateTime.now().add(Duration(days: days)).day;
+                  return ChoiceChip(
+                    label: Text('${days}日'),
+                    selected: isSelected,
+                    selectedColor: const Color(0xFF10B981),
+                    labelStyle: TextStyle(
+                      color: isSelected ? Colors.white : Colors.black87,
+                      fontSize: 13,
+                    ),
+                    onSelected: (_) {
+                      setState(() {
+                        _deadline = DateTime.now().add(Duration(days: days));
+                      });
+                    },
+                  );
+                }).toList(),
               ),
               const SizedBox(height: 16),
 

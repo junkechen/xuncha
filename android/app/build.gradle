@@ -31,10 +31,9 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         
-        // 只保留armeabi-v7a架构，大大减小APK体积
-        // 支持绝大多数低配置ARM设备，覆盖率约95%以上
+        // 只保留arm64-v8a架构，大大减小APK体积
         ndk {
-            abiFilters 'armeabi-v7a'
+            abiFilters 'arm64-v8a'
         }
     }
 
