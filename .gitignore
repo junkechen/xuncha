@@ -53,5 +53,8 @@ app.*.map.json
 analyze.txt
 build.log
 
-# OS
-Thumbs.db
+# JVM / debug artifacts (huge, never commit)
+*.hprof
+hs_err_pid*.log
+java_pid*.hprof
+.env
