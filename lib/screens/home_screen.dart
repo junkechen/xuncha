@@ -40,6 +40,11 @@ class _HomeScreenState extends State<HomeScreen> {
         context.read<IssueProvider>().loadIssues(playSound: true);
         // 初始化催办通知轮询
         _initChat();
+        // 关键修复：进入首页时，把所有催办/隐患通知强制标记为已读（云端+本地）
+        // 解决"重复登录后，以前查看办理结束的催办信息又提示一次"的问题
+        Future.microtask(() async {
+          await context.read<ChatProvider>().markAllRemindersAsRead();
+        });
         // 申请系统通知权限（第一次进入首页时）
         _requestNotificationPermission();
       }

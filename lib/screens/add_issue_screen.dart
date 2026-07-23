@@ -234,11 +234,10 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
         // 备用：使用CloudBaseService
         await _loadUsersFromCloudBase();
       }
-      
-      // 如果部门为空，也尝试加载部门列表
-      if (!_departmentsLoaded) {
-        await _loadDepartmentsFromCloud();
-      }
+
+      // 无论上面从 users 提取是否成功，都从云端 departments 集合补充一次
+      // 避免出现：users 里有用户但没有"板带车间"这类新增车间时，下拉列表缺失
+      await _loadDepartmentsFromCloud();
     } catch (e) {
       print('❌ 加载用户失败: $e');
       // 尝试使用CloudBaseService备用

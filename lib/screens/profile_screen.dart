@@ -890,9 +890,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('版本: v3.7.1'),
+            Text('版本: v3.7.3'),
             SizedBox(height: 8),
-            Text('构建: 2026-06-17'),
+            Text('构建: 2026-07-23'),
             SizedBox(height: 8),
             Text('© 2026 冠洲安环部'),
             SizedBox(height: 16),

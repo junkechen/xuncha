@@ -36,9 +36,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
     
     // 启动轮询，实时接收催办通知
     chatProvider.startPolling();
-    
-    // 进入通知列表时，立即标记所有消息已读（清除角标）
+
+    // 进入通知列表时：
+    // 1) 先把所有催办/隐患通知的本地状态修复成"已读"，避免登录后老催办显示为"新"
+    // 2) 再调用原 markAllAsRead 处理其他消息（聊天消息等）
     Future.microtask(() async {
+      await chatProvider.markAllRemindersAsRead();
       await chatProvider.markAllAsRead();
     });
   }

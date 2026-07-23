@@ -52,8 +52,56 @@ class ChatProvider extends ChangeNotifier {
     
     notifyListeners();
     
-    // 用户切换时，立即拉取离线消息
-    _loadOfflineMessages();
+    // 用户切换时，先批量标记云端已读，再拉取离线消息（彻底解决登录后老催办重新响铃/弹窗）
+    _markAllCloudMessagesAsReadOnLogin().then((_) => _loadOfflineMessages());
+  }
+
+  /// 登录时同步云端已读状态（关键修复）：
+  /// 云端"isRead"字段可能仍为false（用户上次没标记成功或云端缺失），
+  /// 若直接信任云端，会让"已查看过的催办"重新变未读。
+  /// 这里：先把云端所有发给自己的 reminder/issueNotify 标记为已读，
+  /// 然后再把它们的ID写进本地 _localReadIds（与响铃/弹窗逻辑一致）。
+  Future<void> _markAllCloudMessagesAsReadOnLogin() async {
+    if (_currentUserId.isEmpty) return;
+    try {
+      // 从云端拉取发给自己的催办/隐患通知
+      final cloud = await _queryMessages();
+      final mine = cloud.where((m) =>
+        m.toUserId == _currentUserId &&
+        (m.type == MessageType.reminder || m.type == MessageType.issueNotify) &&
+        m.issueId != null
+      ).toList();
+      if (mine.isEmpty) return;
+
+      // 1) 把它们的ID加入本地已读集合（保证响铃/弹窗不重复）
+      for (final m in mine) {
+        _localReadIds.add(m.id);
+      }
+      await _saveLocalReadIds();
+      print('✅ 登录时把 ${mine.length} 条催办/隐患通知标记为本地已读');
+
+      // 2) 批量同步到云端（避免每次单条调用）
+      try {
+        await http.post(
+          Uri.parse(_apiUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'action': 'updateMany',
+            'collection': 'message',
+            'query': {
+              'toUserId': _currentUserId,
+              'isRead': false,
+            },
+            'data': {'isRead': true},
+          }),
+        ).timeout(const Duration(seconds: 10));
+        print('☁️ 已批量标记云端催办消息为已读');
+      } catch (e) {
+        print('⚠️ 云端批量标记失败(不影响本地): $e');
+      }
+    } catch (e) {
+      print('⚠️ 登录时标记已读失败: $e');
+    }
   }
   
   /// 加载离线消息（登录时或切换用户时调用）
@@ -64,21 +112,35 @@ class ChatProvider extends ChangeNotifier {
       print('📥 正在加载离线消息...');
       final result = await _queryMessages();
       if (result.isNotEmpty) {
+        // 【关键修复】进入消息列表时，不要让"老催办"看起来像新消息
+        // 凡是发给当前用户、且本地已读过的催办/隐患通知，强制标记为已读
+        // （即使云端返回的 isRead 还是 false，UI 也不应该把它当成"新"消息）
+        final adjustedResult = result.map((msg) {
+          if (msg.toUserId == _currentUserId &&
+              (msg.type == MessageType.reminder ||
+                  msg.type == MessageType.issueNotify) &&
+              msg.issueId != null &&
+              _localReadIds.contains(msg.id)) {
+            return msg.copyWith(isRead: true);
+          }
+          return msg;
+        }).toList();
+
         // 如果当前消息列表为空，直接使用查询结果
         if (_messages.isEmpty) {
           _messages.clear();
-          _messages.addAll(result);
+          _messages.addAll(adjustedResult);
         } else {
           // 如果有现有消息，合并新消息（不覆盖）
           final existingIds = _messages.map((m) => m.id).toSet();
-          for (var msg in result) {
+          for (var msg in adjustedResult) {
             if (!existingIds.contains(msg.id) && !msg.id.startsWith('temp_')) {
               _messages.add(msg);
             }
           }
         }
         _sortMessages();
-        final newCount = result.length;
+        final newCount = adjustedResult.length;
         print('📥 加载了 $newCount 条离线消息，当前共有 ${_messages.length} 条');
         notifyListeners();
       } else {
@@ -137,6 +199,12 @@ class ChatProvider extends ChangeNotifier {
                 if (hasReadInSession) {
                   msgToAdd = msg.copyWith(isRead: true);
                 }
+              }
+              // 【关键修复】即使这条消息对当前 _messages 是"新的"，
+              // 但只要本地 _localReadIds 里已有它的ID（说明用户上次查看过），
+              // 也不要再响铃/弹窗，也不要让UI显示为"未读"。
+              if (_localReadIds.contains(msgToAdd.id)) {
+                msgToAdd = msgToAdd.copyWith(isRead: true);
               }
               _messages.add(msgToAdd);
               newCount++;
@@ -406,6 +474,60 @@ class ChatProvider extends ChangeNotifier {
     final unreadMessages = _messages.where((m) => !m.isRead && m.toUserId == _currentUserId).toList();
     for (var msg in unreadMessages) {
       await markAsRead(msg.id);
+    }
+  }
+
+  /// 把所有"已查看过的催办/隐患通知"标记为已读（核心修复 - 解决登录后老催办重新响铃/弹窗）
+  ///
+  /// 原理：之前 _loadOfflineMessages 只是把云端消息合并进来，但云端 isRead 字段可能为 false，
+  /// 导致 getReminderSessions() / getUnreadCount() 仍把"已查看过"的催办当成"未读"，
+  /// 重新弹横幅通知、播放提示音。
+  ///
+  /// 此方法遍历所有发给自己的催办/隐患通知，强制标记 isRead=true（本地+云端），并加入 _localReadIds。
+  /// 调用时机：登录后/切换用户后/进入催办页面时
+  Future<void> markAllRemindersAsRead() async {
+    try {
+      final reminders = _messages.where((m) =>
+        m.toUserId == _currentUserId &&
+        (m.type == MessageType.reminder || m.type == MessageType.issueNotify) &&
+        m.issueId != null
+      ).toList();
+      if (reminders.isEmpty) return;
+
+      // 1) 内存中直接标记为已读（不影响其他消息的本地状态）
+      for (final m in reminders) {
+        final idx = _messages.indexWhere((x) => x.id == m.id);
+        if (idx != -1 && !_messages[idx].isRead) {
+          _messages[idx] = _messages[idx].copyWith(isRead: true);
+        }
+        _localReadIds.add(m.id);
+      }
+      await _saveLocalReadIds();
+
+      // 2) 同步到云端（批量，一次HTTP请求，避免对每条催办单独调用）
+      try {
+        await http.post(
+          Uri.parse(_apiUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'action': 'updateMany',
+            'collection': 'message',
+            'query': {
+              'toUserId': _currentUserId,
+              'isRead': false,
+            },
+            'data': {'isRead': true},
+          }),
+        ).timeout(const Duration(seconds: 10));
+        print('☁️ 批量同步已读状态到云端成功');
+      } catch (e) {
+        print('⚠️ 批量同步已读状态到云端失败(不影响本地): $e');
+      }
+
+      print('✅ 已将 ${reminders.length} 条催办/隐患通知标记为已读');
+      notifyListeners();
+    } catch (e) {
+      print('标记催办已读失败: $e');
     }
   }
   
