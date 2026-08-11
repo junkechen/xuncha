@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import '../config/constants.dart';
 import '../models/user.dart';
 import '../services/cloudbase_service.dart';
 
@@ -16,10 +17,8 @@ class AuthProvider extends ChangeNotifier {
   List<User> _localUsers = [];
   SharedPreferences? _prefs;
 
-  // 腾讯云CloudBase配置
-  static const String _envId = 'anuanbu1-1-6gjqaydwd067dbb1';
-  // 云函数API地址（HTTP访问服务）- 公开给其他组件使用
-  static const String apiBaseUrl = 'https://$_envId-1421679372.ap-shanghai.app.tcloudbase.com/api';
+  // 腾讯云CloudBase配置统一从 constants.dart 读取
+  static String get apiBaseUrl => AppConstants.cloudBaseApiUrl;
   static const String _publishableKey = 'eyJhbGciOiJSUzI1NiIsImtpZCI6IjlkMWRjMzFlLWI0ZDAtNDQ4Yi1hNzZmLWIwY2M2M2Q4MTQ5OCJ9.eyJpc3MiOiJodHRwczovL2FudWFuYnUxLTEtNmdqcWF5ZHdkMDY3ZGJiMS5hcC1zaGFuZ2hhaS50Y2ItYXBpLnRlbmNlbnRjbG91ZGFwaS5jb20iLCJzdWIiOiJhbm9uIiwiYXVkIjoiYW51YW5idTEtMS02Z2pxYXlkd2QwNjdkYmIxIiwiZXhwIjo0MDc5ODQwODY0LCJpYXQiOjE3NzYxNTc2NjQsIm5vbmNlIjoiUEE2em4wcnpUVlNCTDFHYi1zQWhpQSIsImF0X2hhc2giOiJQQTZ6bjByelRWU0JMMUdiLXNBaGlBIiwibmFtZSI6IkFub255bW91cyIsInNjb3BlIjoiYW5vbnltb3VzIiwicHJvamVjdF9pZCI6ImFudWFuYnUxLTEtNmdqcWF5ZHdkMDY3ZGJiMSIsIm1ldGEiOnsicGxhdGZvcm0iOiJQdWJsaXNoYWJsZUtleSJ9LCJ1c2VyX3R5cGUiOiIiLCJjbGllbnRfdHlwZSI6ImNsaWVudF91c2VyIiwiaXNfc3lzdGVtX2FkbWluIjpmYWxzZX0.mUlPQJg_VdB5TX61qQ9trqBKm721Vy75WesEXnpExNlLXwRubzS8I4vPz2YeeWyeBWNzSIyJYst87gr1VUdk6RewP1qRBQPrVNKKoaLDfswfyaK_5DJQs3bl-C6wuTTzz9K5JBhVqhsrHBnZjRNP-_FM2tFcv4xGgIt61YAXfXGEL5-9COpv6KuqvrWA7rYDe-bnrpM8yShdRcjJEVKawyk40_Xi8TnNbPIznqj_9MvOkVxKT4-ZvQC4jZZPMHSYVw6fz77rUL6bFV2pPgVYRosnhDiK0aXNHnUdChe9oLztWW2zvOx2tN2YUQjq_x50WqxvNEb-hZ6o4S7N4jckMw';
 
   User? get currentUser => _currentUser;
@@ -195,7 +194,7 @@ class AuthProvider extends ChangeNotifier {
       
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'add',
           'collection': 'users',
@@ -231,7 +230,7 @@ class AuthProvider extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'users',
@@ -330,7 +329,7 @@ class AuthProvider extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'users',
@@ -367,7 +366,7 @@ class AuthProvider extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'users',
@@ -392,7 +391,7 @@ class AuthProvider extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'add',
           'collection': 'users',
@@ -617,7 +616,7 @@ class AuthProvider extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'users',
@@ -696,7 +695,7 @@ class AuthProvider extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'users',
@@ -747,6 +746,8 @@ class AuthProvider extends ChangeNotifier {
         }
         
         await _saveLocalUsers();
+        // 按姓名拼音/字母顺序排序，方便用户查找
+        _localUsers.sort((a, b) => a.name.compareTo(b.name));
         notifyListeners();
         return _localUsers.toList();
       } else {
@@ -794,8 +795,13 @@ class AuthProvider extends ChangeNotifier {
       );
 
       // 同时保存到腾讯云
-      await _addUserToCloudBase(newUser);
-      
+      final cloudSuccess = await _addUserToCloudBase(newUser);
+      if (!cloudSuccess) {
+        _error = '云端保存失败，请检查网络或腾讯云状态';
+        notifyListeners();
+        return false;
+      }
+
       // 保存本地
       _localUsers.add(newUser);
       await _saveLocalUsers();
@@ -1067,7 +1073,7 @@ class AuthProvider extends ChangeNotifier {
       // 先查询用户ID
       final response = await http.post(
         Uri.parse(apiBaseUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'users',
@@ -1083,7 +1089,7 @@ class AuthProvider extends ChangeNotifier {
           // 更新云端数据 - 使用正确的云数据库更新格式
           final updateResponse = await http.post(
             Uri.parse(apiBaseUrl),
-            headers: {'Content-Type': 'application/json'},
+            headers: AppConstants.cloudBaseHeaders,
             body: jsonEncode({
               'action': 'update',
               'collection': 'users',

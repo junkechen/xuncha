@@ -6,12 +6,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/constants.dart';
 import '../models/chat_message.dart';
 import '../services/audio_service.dart';
 
 class ChatProvider extends ChangeNotifier {
-  static const String _apiUrl = 'https://anuanbu1-1-6gjqaydwd067dbb1-1421679372.ap-shanghai.app.tcloudbase.com/api';
-  
+  String get _apiUrl => AppConstants.cloudBaseApiUrl;
+
   // 本地已读消息ID的存储key前缀（按用户区分，解决每次登录重复响铃问题）
   static const String _readIdsKey = 'chat_read_msg_ids_';
 
@@ -84,7 +85,7 @@ class ChatProvider extends ChangeNotifier {
       try {
         await http.post(
           Uri.parse(_apiUrl),
-          headers: {'Content-Type': 'application/json'},
+          headers: AppConstants.cloudBaseHeaders,
           body: jsonEncode({
             'action': 'updateMany',
             'collection': 'message',
@@ -310,7 +311,7 @@ class ChatProvider extends ChangeNotifier {
       
       final response = await http.post(
         Uri.parse(_apiUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'message',
@@ -369,7 +370,7 @@ class ChatProvider extends ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse(_apiUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'add',
           'collection': 'message',
@@ -428,7 +429,7 @@ class ChatProvider extends ChangeNotifier {
       // 再调用API同步到云端（用 _id 查询云端记录）
       await http.post(
         Uri.parse(_apiUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'update',
           'collection': 'message',
@@ -508,7 +509,7 @@ class ChatProvider extends ChangeNotifier {
       try {
         await http.post(
           Uri.parse(_apiUrl),
-          headers: {'Content-Type': 'application/json'},
+          headers: AppConstants.cloudBaseHeaders,
           body: jsonEncode({
             'action': 'updateMany',
             'collection': 'message',

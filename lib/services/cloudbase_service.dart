@@ -1,11 +1,12 @@
 // lib/services/cloudbase_service.dart
 // 腾讯云开发 CloudBase 服务 - 云函数HTTP API调用方式
-// API地址: https://anuanbu1-1-6gjqaydwd067dbb1-1421679372.ap-shanghai.app.tcloudbase.com/api
+// API地址与请求头统一从 lib/config/constants.dart 读取
 
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as images;
+import '../config/constants.dart';
 import '../models/issue.dart' as models;
 import '../models/user.dart' as models;
 
@@ -13,8 +14,8 @@ class CloudBaseService {
   static CloudBaseService? _instance;
   static bool _isInitialized = false;
   
-  // 云函数API地址 - 直接硬编码确保正确
-  static const String _apiUrl = 'https://anuanbu1-1-6gjqaydwd067dbb1-1421679372.ap-shanghai.app.tcloudbase.com/api';
+  // 云函数API地址 - 统一从 constants.dart 读取
+  static String get _apiUrl => AppConstants.cloudBaseApiUrl;
   
   // 认证令牌（登录后获取）
   String? _accessToken;
@@ -75,7 +76,7 @@ class CloudBaseService {
 
       final response = await http.post(
         Uri.parse(_apiUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: body,
       ).timeout(const Duration(seconds: 60));
 

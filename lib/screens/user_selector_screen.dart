@@ -4,6 +4,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import '../config/constants.dart';
 import '../models/user.dart';
 
 class UserSelectorScreen extends StatefulWidget {
@@ -14,8 +15,8 @@ class UserSelectorScreen extends StatefulWidget {
 }
 
 class _UserSelectorScreenState extends State<UserSelectorScreen> {
-  static const String _apiUrl = 'https://anuanbu1-1-6gjqaydwd067dbb1-1421679372.ap-shanghai.app.tcloudbase.com/api';
-  
+  String get _apiUrl => AppConstants.cloudBaseApiUrl;
+
   List<User> _users = [];
   List<User> _filteredUsers = [];
   bool _loading = true;
@@ -40,7 +41,7 @@ class _UserSelectorScreenState extends State<UserSelectorScreen> {
     try {
       final response = await http.post(
         Uri.parse(_apiUrl),
-        headers: {'Content-Type': 'application/json'},
+        headers: AppConstants.cloudBaseHeaders,
         body: jsonEncode({
           'action': 'query',
           'collection': 'users',

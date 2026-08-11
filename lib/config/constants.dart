@@ -9,9 +9,16 @@ class AppConstants {
   // 腾讯云开发环境ID
   // 环境ID在腾讯云控制台 → 云开发 → 环境设置 中查看
   static const String cloudBaseEnvId = 'anuanbu1-1-6gjqaydwd067dbb1';
-  
-  // API配置（云开发自动生成的API地址）
-  static const String baseUrl = 'https://\${cloudBaseEnvId}.cloudbase.cn';
+
+  // 云函数 HTTP 访问服务地址（HTTP 网关）
+  static const String cloudBaseApiUrl =
+      'https://$cloudBaseEnvId-1421679372.ap-shanghai.app.tcloudbase.com/api';
+
+  // 云函数 HTTP 请求头（必须带 X-TCB-Env，否则云函数报 INVALID_ENV）
+  static const Map<String, String> cloudBaseHeaders = {
+    'Content-Type': 'application/json',
+    'X-TCB-Env': cloudBaseEnvId,
+  };
   
   // 数据库集合名称
   static const String usersCollection = 'users';
