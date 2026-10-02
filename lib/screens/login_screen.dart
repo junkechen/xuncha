@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/auth_provider.dart';
+import '../models/business_type.dart';
+import '../widgets/business_type_selector.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -344,6 +346,8 @@ class _RegisterDialogState extends State<RegisterDialog> {
 
   String _selectedRole = 'inspector';
   String _selectedDept = '安全保卫部';
+  // 业务类型：默认全选，与桌面端新增用户口径一致
+  List<String> _selectedBusinessTypes = List<String>.from(kBusinessAllCodes);
 
   final List<String> _roles = ['inspector', 'leader', 'rectifier'];
   final List<String> _departments = [
@@ -382,6 +386,7 @@ class _RegisterDialogState extends State<RegisterDialog> {
         phone: _phoneController.text.trim(),
         department: _selectedDept,
         role: _selectedRole,
+        businessTypes: _selectedBusinessTypes,
       );
 
       if (mounted) {
@@ -536,6 +541,14 @@ class _RegisterDialogState extends State<RegisterDialog> {
                 onChanged: (value) {
                   setState(() => _selectedRole = value!);
                 },
+              ),
+              const SizedBox(height: 16),
+
+              // 业务类型（可多选，不选 = 全部业务）
+              BusinessTypeSelector(
+                selected: _selectedBusinessTypes,
+                onChanged: (next) =>
+                    setState(() => _selectedBusinessTypes = next),
               ),
               const SizedBox(height: 16),
 

@@ -12,10 +12,24 @@ import '../providers/auth_provider.dart';
 import '../providers/issue_provider.dart';
 import '../providers/chat_provider.dart';
 import '../models/issue.dart' as models;
+import '../models/business_type.dart';
+import '../models/hazard_analysis.dart';
 import '../services/cloudbase_service.dart';
+import '../config/dept.dart';
+import '../utils/media_permission.dart';
 
 class AddIssueScreen extends StatefulWidget {
-  const AddIssueScreen({super.key});
+  /// 由 AI 隐患识别页传入的分析结果，用于预填表单（用户仍可随意修改）
+  final HazardAnalysis? initialAnalysis;
+
+  /// 由 AI 隐患识别页传入的现场照片，避免用户转到上报页后还要重新拍一遍
+  final List<File>? initialPhotos;
+
+  const AddIssueScreen({
+    super.key,
+    this.initialAnalysis,
+    this.initialPhotos,
+  });
 
   @override
   State<AddIssueScreen> createState() => _AddIssueScreenState();
@@ -29,9 +43,14 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
   final _deptController = TextEditingController();
   final ImagePicker _picker = ImagePicker();
   
-  models.IssueCategory _selectedCategory = models.IssueCategory.wastewater;
+  models.IssueCategory _selectedCategory = models.IssueCategory.envWastewater;
   models.SeverityLevel _selectedSeverity = models.SeverityLevel.general;
   DateTime _deadline = DateTime.now().add(const Duration(days: 3));
+
+  /// 当前选中的业务类型。决定类别选项与预设描述。
+  /// 账号仅归属 1 个业务时锁定（_businessLocked=true）并隐藏业务选择框。
+  String _selectedBusiness = 'SAFE';
+  bool _businessLocked = false;
   
   // 部门列表（基础+云端动态）
   List<String> _departments = [
@@ -74,28 +93,17 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
   
   // 真实图片列表（本地文件路径）
   List<File> _photoFiles = [];
+  // 与 _photoFiles 一一对应的「压缩前原图」路径。
+  // 上报上传用 _photoFiles（压到 50KB 省流量）；
+  // AI 识别必须用这里的原图——压缩图分辨率可能低至 640x360，
+  // 视觉模型看不清管道锈蚀、阀门状态这类细节，且画质损失不可逆。
+  final List<String> _originalPhotoPaths = [];
   // 上传后的云端URL列表
   List<String> _uploadedUrls = [];
   bool _isUploading = false;
-  
-  // 预设问题描述列表
-  List<String> _presetDescriptions = [
-    '设备漏油严重，需要及时处理',
-    '危险化学品存放不规范',
-    '废气排放超标',
-    '消防通道被堵塞',
-    '电气线路老化',
-    '安全防护设施缺失',
-    '地面油污湿滑',
-    '噪音超标',
-    '固废堆放混乱',
-    '应急预案不完善',
-    '个人防护用品佩戴不规范',
-    '动火作业未审批',
-    '有限空间作业无标识',
-    '高处作业无防护',
-    '叉车作业无证驾驶',
-  ];
+
+  // 预设问题描述列表（运行时按当前科室替换为对应字典，见 _loadDeptContext）
+  List<String> _presetDescriptions = [];
   
   // 常用描述（从本地存储加载）
   List<String> _frequentDescriptions = [];
@@ -105,7 +113,62 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
     super.initState();
     // 初始化云端服务并加载数据
     _initializeAndLoad();
+    _loadBusinessContext();
     _loadFrequentDescriptions();
+    // 从 AI 识别页带来的照片直接作为现场照片（initState 中无需 setState）
+    final photos = widget.initialPhotos;
+    if (photos != null && photos.isNotEmpty) {
+      _photoFiles.addAll(photos);
+      _originalPhotoPaths.addAll(photos.map((f) => f.path));
+    }
+    // 从 AI 识别页转来时预填表单（在首帧后进行，避免与构建冲突）
+    final preset = widget.initialAnalysis;
+    if (preset != null && preset.isValid) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _applyAnalysis(preset);
+      });
+    }
+  }
+
+  /// 载入当前业务上下文：根据登录用户的 businessTypes 决定业务选择框是否锁定，
+  /// 并据此切换类别选项与预设描述（业务字典隔离，避免安全的人看到"废水排放"）。
+  Future<void> _loadBusinessContext() async {
+    final auth = context.read<AuthProvider>();
+    final raw = auth.currentUser?.businessTypes ?? const [];
+    final valid = raw
+        .where((b) => b == 'SAFE' || b == 'SAVING' || b == 'ENV')
+        .toList();
+    if (!mounted) return;
+    setState(() {
+      if (valid.length == 1) {
+        // 单业务账号：自动采用并隐藏业务选择框（与桌面端一致）
+        _selectedBusiness = valid.first;
+        _businessLocked = true;
+      } else {
+        _businessLocked = false;
+        // 多业务或空业务：默认取第一个有效业务，否则 SAFE
+        _selectedBusiness = valid.isNotEmpty ? valid.first : 'SAFE';
+      }
+      _presetDescriptions = AppDept.presetDescriptions(_selectedBusiness);
+      _resetCategoryToBusiness();
+    });
+  }
+
+  /// 切换业务时，把类别重置为该业务字典首项（避免串业务写错类别）
+  void _resetCategoryToBusiness() {
+    final opts = CATEGORY_BY_BUSINESS[_selectedBusiness] ?? const <String>[];
+    if (opts.isEmpty) return;
+    final first = models.Issue.fromChinese(opts.first, _selectedBusiness);
+    if (_selectedCategory != first) _selectedCategory = first;
+  }
+
+  void _onBusinessChanged(String code) {
+    if (_selectedBusiness == code) return;
+    setState(() {
+      _selectedBusiness = code;
+      _presetDescriptions = AppDept.presetDescriptions(code);
+      _resetCategoryToBusiness();
+    });
   }
 
   // 初始化云端服务并加载数据
@@ -421,6 +484,10 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
       return;
     }
 
+    // 申请相机权限（image_picker 不会自动合并，需运行时申请）
+    if (!await MediaPermissionHelper.ensure(context, ImageSource.camera)) return;
+    if (!mounted) return;
+
     try {
       final XFile? photo = await _picker.pickImage(
         source: ImageSource.camera,
@@ -436,8 +503,11 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
         print('📷 拍照完成，原始大小: ${(fileSize / 1024).toStringAsFixed(1)} KB');
 
         // 先添加原图（让用户看到预览）
+        // 同时记录原图路径：后续压缩会替换 _photoFiles，
+        // 但 AI 识别必须使用压缩前的原图
         setState(() {
           _photoFiles.add(originalFile);
+          _originalPhotoPaths.add(originalFile.path);
         });
 
         // 后台压缩（替换列表中的文件）
@@ -502,7 +572,11 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
       );
       return;
     }
-    
+
+    // 申请相册权限（Android < 13 依赖 READ_EXTERNAL_STORAGE 运行时授权）
+    if (!await MediaPermissionHelper.ensure(context, ImageSource.gallery)) return;
+    if (!mounted) return;
+
     try {
       final List<XFile> photos = await _picker.pickMultiImage(
         imageQuality: 70, // 使用中等质量
@@ -524,6 +598,8 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
               } else {
                 _photoFiles.add(originalFile);
               }
+              // 无论压缩是否成功，都记录压缩前的原图供 AI 识别使用
+              _originalPhotoPaths.add(originalFile.path);
             });
             added++;
           }
@@ -552,9 +628,44 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
   }
 
   // 移除图片
+  /// 由 AI 识别页转来时预填表单（只填空白项，不覆盖用户已填内容）
+  /// 由 AI 识别页转来时预填表单（只填空白项，不覆盖用户已填内容）
+  void _applyAnalysis(HazardAnalysis a) {
+    setState(() {
+      // AI 识别可能给出任意业务，允许用户在业务选择框中调整
+      if (a.businessType.isNotEmpty && (a.businessType == 'SAFE' || a.businessType == 'SAVING' || a.businessType == 'ENV')) {
+        _selectedBusiness = a.businessType;
+        _businessLocked = false;
+        _presetDescriptions = AppDept.presetDescriptions(a.businessType);
+      }
+      _selectedCategory = a.category;
+      _selectedSeverity = a.severity;
+
+      if (_descController.text.trim().isEmpty) {
+        _descController.text = a.toFilledDescription();
+      }
+
+      // 标题：仅当为空、或仍是「选部门时自动带入的部门名」时才覆盖，
+      // 避免冲掉用户已经手写的标题
+      final cur = _titleController.text.trim();
+      final autoDept = _selectedDepartment?.trim() ?? '';
+      if (cur.isEmpty || (autoDept.isNotEmpty && cur == autoDept)) {
+        if (a.title.isNotEmpty) _titleController.text = a.title;
+      }
+    });
+  }
+
+  void _showSnack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
   void _removePhoto(int index) {
     setState(() {
       _photoFiles.removeAt(index);
+      if (index < _originalPhotoPaths.length) {
+        _originalPhotoPaths.removeAt(index);
+      }
     });
   }
 
@@ -1093,6 +1204,11 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
       status: models.IssueStatus.pending,
       createdAt: DateTime.now(),
       updatedAt: DateTime.now(),
+      // 业务类型与科室：科室由业务反查（SAFE→AQ，SAVING/ENV→JN），
+      // 与云端 scopeAddData、issue_provider 的 effDept 完全一致，
+      // 保证双科室用户选 SAFE 时归属安全科而非其默认科室。
+      businessType: _selectedBusiness,
+      deptCode: deptOfBusiness(_selectedBusiness),
     );
 
     final success = await issueProvider.createIssue(issue);
@@ -1143,6 +1259,7 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
       _locationController.clear();
       setState(() {
         _photoFiles.clear();
+        _originalPhotoPaths.clear();
         _uploadedUrls.clear();
         _selectedRectifierId = null;
         _selectedRectifierName = null;
@@ -1180,7 +1297,32 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 问题类型
+              // 业务类型（账号仅归属 1 个业务时锁定并隐藏选择框）
+              if (!_businessLocked) ...[
+                const Text(
+                  '业务类型 *',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: kBusinessTypes.map((b) {
+                    final isSelected = _selectedBusiness == b.code;
+                    return ChoiceChip(
+                      label: Text(b.name),
+                      selected: isSelected,
+                      onSelected: (_) => _onBusinessChanged(b.code),
+                      selectedColor: Color(b.colorValue),
+                      labelStyle: TextStyle(
+                        color: isSelected ? Colors.white : Colors.black87,
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 24),
+              ],
+
+              // 问题类型（类别，随业务联动）
               const Text(
                 '问题类型 *',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
@@ -1188,10 +1330,14 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
-                children: models.IssueCategory.values.map((cat) {
+                // 只渲染当前业务的类别 —— 不能遍历 IssueCategory.values，
+                // 否则安全业务的人会看到"废水排放"，节能业务的人会看到"消防应急"。
+                children: (CATEGORY_BY_BUSINESS[_selectedBusiness] ?? const <String>[])
+                    .map((name) {
+                  final cat = models.Issue.fromChinese(name, _selectedBusiness);
                   final isSelected = _selectedCategory == cat;
                   return ChoiceChip(
-                    label: Text(_getCategoryName(cat)),
+                    label: Text(name),
                     selected: isSelected,
                     onSelected: (selected) {
                       setState(() {
@@ -1604,6 +1750,8 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
                       const SizedBox(height: 12),
                     ],
                     
+                    const SizedBox(height: 12),
+                    
                     // 添加图片按钮
                     Row(
                       children: [
@@ -1688,23 +1836,10 @@ class _AddIssueScreenState extends State<AddIssueScreen> {
     );
   }
 
-  String _getCategoryName(models.IssueCategory cat) {
-    switch (cat) {
-      case models.IssueCategory.wastewater: return '废水';
-      case models.IssueCategory.wastegas: return '废气';
-      case models.IssueCategory.solidWaste: return '固废';
-      case models.IssueCategory.noise: return '噪音';
-      case models.IssueCategory.other: return '其他';
-    }
-  }
+  /// 类别下拉/chip 上显示的中文名（直接复用模型 categoryName，避免与字典走偏）。
+  String _getCategoryName(models.IssueCategory cat) => models.categoryNameOf(cat);
 
-  String _getSeverityName(models.SeverityLevel sev) {
-    switch (sev) {
-      case models.SeverityLevel.general: return '一般';
-      case models.SeverityLevel.serious: return '较重';
-      case models.SeverityLevel.critical: return '严重';
-    }
-  }
+  String _getSeverityName(models.SeverityLevel sev) => models.severityNameOf(sev);
 
   Color _getSeverityColor(models.SeverityLevel sev) {
     switch (sev) {

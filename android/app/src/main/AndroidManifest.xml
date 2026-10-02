@@ -2,7 +2,15 @@
     xmlns:tools="http://schemas.android.com/tools">
     <!-- 拨打电话权限 -->
     <uses-permission android:name="android.permission.CALL_PHONE"/>
-    
+
+    <!-- 相机 / 相册权限（image_picker ^1.0.7 不会自动合并，需应用显式声明） -->
+    <!-- 拍照：委托系统相机应用，仍声明 CAMERA 以兼容各 Android 版本 -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- 选图：Android 13+ 用 READ_MEDIA_IMAGES；旧版（≤12）用 READ_EXTERNAL_STORAGE -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
+
     <!-- 网络权限 -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>

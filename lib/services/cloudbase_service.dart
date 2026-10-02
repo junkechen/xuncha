@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as images;
 import '../config/constants.dart';
+import '../config/dept.dart';
 import '../models/issue.dart' as models;
 import '../models/user.dart' as models;
 
@@ -43,6 +44,20 @@ class CloudBaseService {
     return true;
   }
 
+  /// 请求头：带上服务端签发的 token。
+  ///
+  /// 之前这里是直接用 AppConstants.cloudBaseHeaders（不含 Authorization），
+  /// 云函数因此完全无法判断调用者是谁 —— 12 个 action 全部无鉴权，
+  /// 任何人一次 curl 就能读改全表。多科室隔离在这个前提下等于给玻璃门装锁。
+  /// 现在 token 由 login 返回并存在这里，所有 action 都会带上。
+  Map<String, String> get _authHeaders {
+    final h = Map<String, String>.from(AppConstants.cloudBaseHeaders);
+    if (_accessToken != null && _accessToken!.isNotEmpty) {
+      h['Authorization'] = 'Bearer $_accessToken';
+    }
+    return h;
+  }
+
   /// 调用云函数API（公开方法，供其他 Provider 使用）
   Future<Map<String, dynamic>> callApi(
     String action, {
@@ -76,7 +91,7 @@ class CloudBaseService {
 
       final response = await http.post(
         Uri.parse(_apiUrl),
-        headers: AppConstants.cloudBaseHeaders,
+        headers: _authHeaders,
         body: body,
       ).timeout(const Duration(seconds: 60));
 
@@ -97,6 +112,44 @@ class CloudBaseService {
     }
   }
 
+  /// 向服务端换取 token（登录 + 会话恢复都走这里）。
+  ///
+  /// 背景：APP 原本从不在请求里带任何凭据，云函数 12 个 action 全部无鉴权，
+  /// 任何人一次 curl 就能读改全表。要做科室隔离，这一步躲不掉。
+  ///
+  /// 设计上刻意做成**尽力而为**：失败不影响离线可用性 —— token 拿不到时
+  /// APP 照常使用本地缓存数据，只是云端请求暂时没有身份。
+  /// （等到云函数 AUTH.MODE 切到 'required'，离线写就必须靠 offline_queue 重试了。）
+  Future<bool> acquireSession(String username, String password) async {
+    try {
+      final result =
+          await callApi('login', query: {'name': username, 'password': password});
+      if (result['code'] != 0) return false;
+
+      final token = result['token']?.toString() ?? '';
+      if (token.isEmpty) return false;
+      _accessToken = token;
+
+      final userData = result['user'];
+      if (userData is Map) {
+        final map = Map<String, dynamic>.from(userData);
+        final codes =
+            (result['deptCodes'] as List?)?.map((e) => e.toString()).toList() ??
+                (map['deptCodes'] as List?)?.map((e) => e.toString()).toList() ??
+                const [];
+        map['deptCodes'] = codes;
+        if (codes.isNotEmpty) map['deptCode'] = codes.first;
+        _currentUser = models.User.fromJson(map);
+        // 登录时不让用户选科室，只在当前值越界时才纠正
+        await AppDept.syncFromUser(AppDept.availableFor(map['deptCode']?.toString(), codes));
+      }
+      return true;
+    } catch (e) {
+      print('⚠️ 换取 token 失败（离线时属正常）: $e');
+      return false;
+    }
+  }
+
   /// 登录
   Future<LoginResult> login(String username, String password) async {
     // 使用云端登录
@@ -104,9 +157,22 @@ class CloudBaseService {
       final result = await callApi('login', query: {'name': username, 'password': password});
       
       if (result['code'] == 0 && result['user'] != null) {
-        final userData = result['user'] as Map<String, dynamic>;
+        // 服务端签发的 token（HMAC-SHA256）。取代原先伪造的 'cloudbase_token_xxx'。
+        // 后续所有请求都靠它表明身份，云函数端的 deptCode 也直接从 token 里取，
+        // 客户端传什么都不作数。
+        final token = result['token']?.toString() ?? '';
+        _accessToken = token.isNotEmpty ? token : null;
+
+        final userData = Map<String, dynamic>.from(result['user'] as Map);
+        // deptCodes 由服务端在登录返回体顶层给出（见云函数 login 分支）
+        final List<String> deptCodes =
+            (result['deptCodes'] as List?)?.map((e) => e.toString()).toList() ??
+                (userData['deptCodes'] as List?)?.map((e) => e.toString()).toList() ??
+                const [];
+        userData['deptCodes'] = deptCodes;
+        if (deptCodes.isNotEmpty) userData['deptCode'] = deptCodes.first;
+
         _currentUser = models.User.fromJson(userData);
-        _accessToken = 'cloudbase_token_${DateTime.now().millisecondsSinceEpoch}';
         return LoginResult(success: true, user: _currentUser);
       } else {
         return LoginResult(success: false, error: result['message'] ?? '登录失败');
@@ -118,10 +184,13 @@ class CloudBaseService {
   }
 
   /// 登出
-  void logout() {
+  Future<void> logout() async {
     _accessToken = null;
     _refreshToken = null;
     _currentUser = null;
+    // 不清掉当前科室，下一个人登录会先落到上一个用户的科室视图。
+    // 这是整套隔离里最容易被忽略的一处脏状态。
+    await AppDept.reset();
   }
 
   /// 获取当前用户
@@ -130,82 +199,54 @@ class CloudBaseService {
   /// 是否已登录
   bool get isLoggedIn => _accessToken != null;
 
-  /// 压缩图片文件到目标大小（150KB以下）
-  /// 返回压缩后的文件路径，如果失败返回原路径
+  /// 压缩图片文件到目标大小（56KB以下）。
+  ///
+  /// ⚠️ 网关实测：CloudBase HTTP 触发对请求体限制约 100KB，
+  /// 上传把图片 base64 塞进 body（膨胀约 4/3），故单张 JPEG 必须 ≤ ~56KB
+  /// （base64 ≤ ~75KB，body < 85KB），否则返回 413 Payload Too Large。
+  /// 返回压缩后的文件路径，如果失败返回原路径。
   Future<String?> compressImageForUpload(String filePath) async {
     try {
       final file = File(filePath);
       if (!await file.exists()) return filePath;
 
       final fileSize = await file.length();
-      final fileSizeKB = fileSize / 1024;
-      
-      // 如果文件已经小于150KB，不需要压缩
-      if (fileSizeKB <= 150) {
-        print('📷 图片大小 ${fileSizeKB.toStringAsFixed(1)}KB，无需压缩');
-        return filePath;
-      }
+      final maxBytes = 56 * 1024; // base64 后约 75KB，body<85KB<网关100KB
 
-      // 使用 image 包进行压缩
+      if (fileSize <= maxBytes) return filePath;
+
       final bytes = await file.readAsBytes();
       final image = images.decodeImage(bytes);
-      
-      if (image == null) {
-        print('❌ 无法解码图片: $filePath');
-        return filePath;
-      }
+      if (image == null) return filePath;
 
-      // 计算压缩比例，目标150KB
-      // JPEG 编码质量从 95 开始尝试，逐步降低
-      int quality = 90;
+      // 先按质量逐步降，目标 56KB
+      int quality = 80;
       List<int>? compressed;
-      
-      while (quality >= 30) {
+      while (quality >= 25) {
         compressed = images.encodeJpg(image, quality: quality);
-        final compressedKB = compressed.length / 1024;
-        
-        if (compressedKB <= 150) {
-          print('📷 压缩成功: ${fileSizeKB.toStringAsFixed(1)}KB -> ${compressedKB.toStringAsFixed(1)}KB (quality=$quality)');
-          break;
-        }
-        quality -= 10;
+        if (compressed.length <= maxBytes) break;
+        quality -= 8;
       }
 
-      if (compressed != null && compressed.length < bytes.length) {
-        // 保存压缩后的文件
-        final compressedFile = File(filePath);
-        await compressedFile.writeAsBytes(compressed);
-        print('📷 压缩后大小: ${(compressed.length / 1024).toStringAsFixed(1)}KB');
+      if (compressed != null && compressed.length <= maxBytes) {
+        await File(filePath).writeAsBytes(compressed);
+        print('📷 压缩成功: ${(fileSize / 1024).toStringAsFixed(1)}KB -> ${(compressed.length / 1024).toStringAsFixed(1)}KB (quality=$quality)');
         return filePath;
       }
-      
-      // 如果压缩后仍然太大，使用更激进的压缩
-      if (compressed != null) {
-        final compressedKB = compressed.length / 1024;
-        print('📷 最小压缩后仍 ${compressedKB.toStringAsFixed(1)}KB，继续压缩...');
-        
-        // 缩放图片尺寸
-        final scale = 150 / compressedKB;
-        final newWidth = (image.width * scale * 0.8).toInt().clamp(320, 1920);
-        final resized = images.copyResize(image, width: newWidth);
-        
-        // 再次尝试低质量编码
-        for (int q = 50; q >= 20; q -= 10) {
-          final smallCom = images.encodeJpg(resized, quality: q);
-          if (smallCom.length / 1024 <= 150) {
-            await File(filePath).writeAsBytes(smallCom);
-            print('📷 最终压缩: ${(smallCom.length / 1024).toStringAsFixed(1)}KB (缩放+quality=$q)');
-            return filePath;
-          }
+
+      // 仍过大：缩放后再压
+      final resized = images.copyResize(image, width: 480);
+      for (int q = 60; q >= 25; q -= 8) {
+        final c = images.encodeJpg(resized, quality: q);
+        if (c.length <= maxBytes) {
+          await File(filePath).writeAsBytes(c);
+          print('📷 缩放后压缩: ${(c.length / 1024).toStringAsFixed(1)}KB (width=480,quality=$q)');
+          return filePath;
         }
-        
-        // 最后手段：使用极低质量
-        final lastCom = images.encodeJpg(resized, quality: 20);
-        await File(filePath).writeAsBytes(lastCom);
-        print('📷 强制压缩: ${(lastCom.length / 1024).toStringAsFixed(1)}KB');
-        return filePath;
       }
-      
+      final last = images.encodeJpg(resized, quality: 25);
+      await File(filePath).writeAsBytes(last);
+      print('📷 强制压缩: ${(last.length / 1024).toStringAsFixed(1)}KB');
       return filePath;
     } catch (e) {
       print('⚠️ 图片压缩异常: $e');
@@ -241,8 +282,8 @@ class CloudBaseService {
         
         // ===== 自动压缩：图片大于150KB时自动压缩 =====
         String pathToUpload = filePath;
-        if (fileSize > 150 * 1024) { // 超过150KB
-          print('📷 图片 ${(fileSize / 1024).toStringAsFixed(1)}KB > 150KB，开始自动压缩...');
+        if (fileSize > 56 * 1024) { // 超过56KB（base64约75KB，逼近网关100KB上限）
+          print('📷 图片 ${(fileSize / 1024).toStringAsFixed(1)}KB > 56KB，开始自动压缩...');
           final compressed = await compressImageForUpload(filePath);
           if (compressed != null && compressed != filePath) {
             pathToUpload = compressed;
@@ -264,9 +305,9 @@ class CloudBaseService {
           return null;
         }
         
-        // 检查Base64数据大小（云函数3秒超时限制）
-        // 150KB图片Base64约200KB，是安全上限
-        if (base64Data.length > 250 * 1024) { // 超过250KB可能超时
+        // 检查Base64数据大小（网关请求体约100KB硬限制）
+        // 单张JPEG必须≤56KB，base64≤75KB，否则触发413
+        if (base64Data.length > 75 * 1024) { // 超过75KB（base64）可能413
           print('⚠️ Base64数据过大(${base64Data.length} chars)，进行二次压缩...');
           await compressImageForUpload(pathToUpload);
           final reBytes = await File(pathToUpload).readAsBytes();

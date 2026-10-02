@@ -19,8 +19,11 @@ import 'package:pdf/widgets.dart' as pw;
 import '../providers/issue_provider.dart';
 import '../providers/auth_provider.dart';
 import '../models/issue.dart';
+import '../models/user.dart';
+import '../models/business_type.dart';
 import '../services/cloudbase_service.dart';
 import 'issue_detail_screen.dart';
+import 'workshop_ranking_screen.dart';
 
 class StatsScreen extends StatefulWidget {
   const StatsScreen({super.key});
@@ -32,6 +35,9 @@ class StatsScreen extends StatefulWidget {
 class _StatsScreenState extends State<StatsScreen> {
   String _selectedPeriod = '本月';
   bool _isExporting = false;
+
+  /// 当前选中的业务类型（空表示不过滤，兼容旧逻辑）
+  final Set<String> _selectedBusinesses = <String>{};
 
   // 模拟历史数据（实际项目中应从API获取）
   final Map<String, Map<String, int>> _historicalData = {
@@ -65,8 +71,26 @@ class _StatsScreenState extends State<StatsScreen> {
       ),
       body: Consumer<IssueProvider>(
         builder: (context, issueProvider, _) {
-          final issues = issueProvider.allIssues;
-          
+          final authProvider = Provider.of<AuthProvider>(context, listen: false);
+          final user = authProvider.currentUser;
+          final allIssues = issueProvider.allIssues;
+
+          // 单业务账号：自动锁定其唯一业务；多业务账号首次进入默认选中全部授权业务
+          final userBusinesses = user?.businessTypes ?? kBusinessAllCodes;
+          if (_selectedBusinesses.isEmpty && userBusinesses.isNotEmpty) {
+            _selectedBusinesses.addAll(userBusinesses);
+          }
+
+          // 按业务过滤：无业务字段的旧隐患按中文类别反查业务
+          final issues = _selectedBusinesses.isEmpty
+              ? allIssues
+              : allIssues.where((i) {
+                  final biz = i.businessType.isNotEmpty
+                      ? i.businessType
+                      : businessOfCategoryName(i.categoryName);
+                  return _selectedBusinesses.contains(biz);
+                }).toList();
+
           return SingleChildScrollView(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -74,6 +98,10 @@ class _StatsScreenState extends State<StatsScreen> {
               children: [
                 // 时间筛选
                 _buildPeriodSelector(),
+                const SizedBox(height: 16),
+
+                // 业务筛选（单业务只读展示，多业务可切换）
+                _buildBusinessFilter(user),
                 const SizedBox(height: 20),
 
                 // 总览卡片
@@ -81,7 +109,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 const SizedBox(height: 24),
 
                 // 同比分析
-                _buildComparisonAnalysis(),
+                _buildComparisonAnalysis(issues),
                 const SizedBox(height: 24),
 
                 // 问题类型分布
@@ -145,6 +173,77 @@ class _StatsScreenState extends State<StatsScreen> {
           );
         }).toList(),
       ),
+    );
+  }
+
+  // 业务类型筛选器（单业务账号只读展示，多业务账号可切换）
+  Widget _buildBusinessFilter(User? user) {
+    final businesses = user?.businessTypes ?? kBusinessAllCodes;
+    final isSingle = businesses.length == 1;
+
+    if (businesses.isEmpty) return const SizedBox.shrink();
+
+    if (isSingle) {
+      final code = businesses.first;
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Color(businessColorOf(code)).withOpacity(0.12),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.business, size: 16, color: Color(businessColorOf(code))),
+            const SizedBox(width: 6),
+            Text(
+              businessNameOf(code),
+              style: TextStyle(
+                color: Color(businessColorOf(code)),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              '（仅统计本业务数据）',
+              style: TextStyle(
+                color: Color(businessColorOf(code)).withOpacity(0.8),
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: kBusinessAllCodes.map((code) {
+        final hasAuth = businesses.contains(code);
+        final selected = _selectedBusinesses.contains(code);
+        return ChoiceChip(
+          label: Text(businessShortOf(code)),
+          selected: selected,
+          onSelected: hasAuth
+              ? (value) {
+                  setState(() {
+                    if (value) {
+                      _selectedBusinesses.add(code);
+                    } else {
+                      _selectedBusinesses.remove(code);
+                    }
+                  });
+                }
+              : null,
+          selectedColor: Color(businessColorOf(code)).withOpacity(0.2),
+          backgroundColor: Colors.grey[200],
+          labelStyle: TextStyle(
+            color: selected ? Color(businessColorOf(code)) : Colors.grey[700],
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        );
+      }).toList(),
     );
   }
 
@@ -231,14 +330,60 @@ class _StatsScreenState extends State<StatsScreen> {
     );
   }
 
-  // 同比分析
-  Widget _buildComparisonAnalysis() {
-    final currentData = _historicalData[_selectedPeriod] ?? {'total': 0, 'closed': 0, 'pending': 0, 'processing': 0};
-    final previousPeriod = _selectedPeriod == '本月' ? '上月' : (_selectedPeriod == '本季度' ? '上季度' : '上期');
-    final previousData = _historicalData[previousPeriod] ?? {'total': 0, 'closed': 0, 'pending': 0, 'processing': 0};
+  // 根据 _selectedPeriod 计算本期起止时间
+  ({DateTime start, DateTime end, String label}) _currentPeriodBounds() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    switch (_selectedPeriod) {
+      case '本周':
+        final thisMonday = today.subtract(Duration(days: today.weekday - 1));
+        return (start: thisMonday, end: thisMonday.add(const Duration(days: 7)), label: '本周');
+      case '本月':
+        return (start: DateTime(now.year, now.month, 1), end: DateTime(now.year, now.month + 1, 1), label: '本月');
+      case '本季度':
+        final quarterStartMonth = ((now.month - 1) ~/ 3) * 3 + 1;
+        return (
+          start: DateTime(now.year, quarterStartMonth, 1),
+          end: DateTime(now.year, quarterStartMonth + 3, 1),
+          label: '本季度'
+        );
+      case '本年':
+        return (start: DateTime(now.year, 1, 1), end: DateTime(now.year + 1, 1, 1), label: '本年');
+      default:
+        return (start: today, end: today.add(const Duration(days: 1)), label: _selectedPeriod);
+    }
+  }
 
-    final currentTotal = currentData['total'] ?? 0;
-    final previousTotal = previousData['total'] ?? 0;
+  // 计算上一期起止时间及显示名
+  ({DateTime start, DateTime end, String label}) _previousPeriodBounds() {
+    final current = _currentPeriodBounds();
+    final duration = current.end.difference(current.start);
+    final prevEnd = current.start;
+    final prevStart = prevEnd.subtract(duration);
+    final previousPeriod = switch (_selectedPeriod) {
+      '本周' => '上周',
+      '本月' => '上月',
+      '本季度' => '上季度',
+      '本年' => '上年',
+      _ => '上期',
+    };
+    return (start: prevStart, end: prevEnd, label: previousPeriod);
+  }
+
+  int _countIssuesInRange(List<Issue> issues, DateTime start, DateTime end) {
+    return issues.where((i) {
+      final created = i.createdAt;
+      return !created.isBefore(start) && created.isBefore(end);
+    }).length;
+  }
+
+  // 同比分析（基于当前已按业务过滤的 issues 动态计算）
+  Widget _buildComparisonAnalysis(List<Issue> issues) {
+    final current = _currentPeriodBounds();
+    final previous = _previousPeriodBounds();
+
+    final currentTotal = _countIssuesInRange(issues, current.start, current.end);
+    final previousTotal = _countIssuesInRange(issues, previous.start, previous.end);
     final change = previousTotal > 0 ? ((currentTotal - previousTotal) / previousTotal * 100) : 0.0;
 
     return Container(
@@ -275,7 +420,7 @@ class _StatsScreenState extends State<StatsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      _selectedPeriod,
+                      current.label,
                       style: TextStyle(color: Colors.grey[600], fontSize: 12),
                     ),
                     Text(
@@ -318,7 +463,7 @@ class _StatsScreenState extends State<StatsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      previousPeriod,
+                      previous.label,
                       style: TextStyle(color: Colors.grey[600], fontSize: 12),
                     ),
                     Text(
@@ -351,7 +496,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    change < 0 
+                    change < 0
                         ? '问题数量同比下降${change.abs().toStringAsFixed(1)}%，整改效果良好！'
                         : '问题数量同比上升${change.abs().toStringAsFixed(1)}%，需加强巡检力度。',
                     style: TextStyle(
@@ -618,19 +763,27 @@ class _StatsScreenState extends State<StatsScreen> {
     final sortedDepts = deptCount.entries.toList()
       ..sort((a, b) => b.value.length.compareTo(a.value.length));
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.withOpacity(0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => WorkshopRankingScreen(issues: issues),
+        ),
       ),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -661,7 +814,7 @@ class _StatsScreenState extends State<StatsScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            '点击可查看该车间所有问题详情',
+            '点击查看全部${sortedDepts.length}个车间排名',
             style: TextStyle(color: Colors.grey[500], fontSize: 12),
           ),
           const SizedBox(height: 16),
@@ -770,9 +923,10 @@ class _StatsScreenState extends State<StatsScreen> {
             }),
         ],
       ),
+    ),
     );
   }
-  
+
   // 显示车间问题详情弹窗
   void _showDepartmentIssueDetail(BuildContext context, String department, List<Issue> issues) {
     showModalBottomSheet(
@@ -1837,23 +1991,9 @@ class _StatsScreenState extends State<StatsScreen> {
       default: statusText = issue.status.toString();
     }
 
-    String categoryName;
-    switch (issue.category.toString()) {
-      case 'IssueCategory.safety': case 'safety': categoryName = '安全隐患'; break;
-      case 'IssueCategory.environment': case 'environment': categoryName = '环保问题'; break;
-      case 'IssueCategory.quality': case 'quality': categoryName = '质量问题'; break;
-      case 'IssueCategory.other': case 'other': categoryName = '其他'; break;
-      default: categoryName = issue.category.toString();
-    }
+    String categoryName = issue.categoryName;
 
-    String severityName;
-    switch (issue.severity.toString()) {
-      case 'IssueSeverity.critical': case 'critical': severityName = '严重'; break;
-      case 'IssueSeverity.high': case 'high': severityName = '高'; break;
-      case 'IssueSeverity.medium': case 'medium': severityName = '中'; break;
-      case 'IssueSeverity.low': case 'low': severityName = '低'; break;
-      default: severityName = issue.severity.toString();
-    }
+    String severityName = issue.severityName;
 
     // 问题照片HTML
     final issuePhotosHtml = issuePhotoUrls.isEmpty
@@ -2034,41 +2174,20 @@ class _StatsScreenState extends State<StatsScreen> {
   }
 
   Color _getCategoryColor(IssueCategory cat) {
-    switch (cat) {
-      case IssueCategory.wastewater: return Colors.blue;
-      case IssueCategory.wastegas: return Colors.purple;
-      case IssueCategory.solidWaste: return Colors.green;
-      case IssueCategory.noise: return Colors.orange;
-      case IssueCategory.other: return Colors.grey;
-    }
+    // 按业务着色（SAFE/SAVING/ENV），与桌面端业务字典一致
+    return Color(businessColorOf(businessOfCategoryName(categoryNameOf(cat))));
   }
 
   String _getCategoryName(IssueCategory cat) {
-    switch (cat) {
-      case IssueCategory.wastewater: return '废水';
-      case IssueCategory.wastegas: return '废气';
-      case IssueCategory.solidWaste: return '固废';
-      case IssueCategory.noise: return '噪音';
-      case IssueCategory.other: return '其他';
-    }
+    return categoryNameOf(cat);
   }
 
   String _getCategoryNameEn(IssueCategory cat) {
-    switch (cat) {
-      case IssueCategory.wastewater: return 'Wastewater';
-      case IssueCategory.wastegas: return 'Waste Gas';
-      case IssueCategory.solidWaste: return 'Solid Waste';
-      case IssueCategory.noise: return 'Noise';
-      case IssueCategory.other: return 'Other';
-    }
+    return categoryNameOf(cat);
   }
 
   String _getSeverityName(SeverityLevel sev) {
-    switch (sev) {
-      case SeverityLevel.general: return '一般';
-      case SeverityLevel.serious: return '较重';
-      case SeverityLevel.critical: return '严重';
-    }
+    return severityNameOf(sev);
   }
 
   String _getSeverityNameEn(SeverityLevel sev) {
@@ -2380,7 +2499,7 @@ class _StatsScreenState extends State<StatsScreen> {
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
                     pw.Text('#${i + 1} | ${dateFormat.format(record.timestamp)} | 提交人：${record.submitterName}',
-                      style: const pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                      style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
                     pw.Text(record.description, style: const pw.TextStyle(fontSize: 12)),
                     if (record.photos.isNotEmpty) ...[
                       pw.SizedBox(height: 6),
@@ -2431,7 +2550,7 @@ class _StatsScreenState extends State<StatsScreen> {
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
                     pw.Text('#${i + 1} | ${dateFormat.format(record.timestamp)} | 验收人：${record.reviewerName}',
-                      style: const pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
+                      style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
                     pw.Text(record.note, style: const pw.TextStyle(fontSize: 12)),
                   ],
                 ),

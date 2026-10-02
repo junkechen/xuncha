@@ -8,6 +8,9 @@ import 'providers/auth_provider.dart';
 import 'providers/issue_provider.dart';
 import 'providers/chat_provider.dart';
 import 'providers/settings_provider.dart';
+import 'providers/announcement_provider.dart';
+import 'providers/ai_analysis_provider.dart';
+import 'providers/config_provider.dart';
 import 'services/cloudbase_service.dart';
 import 'services/audio_service.dart';
 import 'services/notification_service.dart';
@@ -30,23 +33,25 @@ class AppNavigator {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 初始化设置服务（先加载，以便 AudioService 可以读取声音开关）
+  // 启动性能优化：只保留首屏必需的初始化。
+  // 设置项决定主题（深色模式/大字体），必须在 runApp 前加载完成。
   final settingsProvider = SettingsProvider();
   await settingsProvider.init();
 
-  // 初始化音频服务（已读取声音开关配置，生成beep音频）
-  await AudioService.instance.init();
-
-  // 初始化系统通知服务
-  await NotificationService.instance.initialize();
-
-  // 初始化腾讯云开发服务
-  final cloudBaseInitialized = await CloudBaseService.instance.init();
-
-  if (!cloudBaseInitialized) {
-    // 如果云服务初始化失败，显示警告
-    debugPrint('⚠️ 腾讯云服务未配置，应用将以演示模式运行');
-  }
+  // 音频/通知/云服务均非首屏渲染必需，改为首帧渲染完成后并行初始化，
+  // 避免启动阶段多个 await 串行阻塞主线程、拖慢冷启动。
+  WidgetsBinding.instance.addPostFrameCallback((_) async {
+    await Future.wait<void>([
+      AudioService.instance.init(),
+      NotificationService.instance.initialize(),
+    ]);
+    final cloudBaseInitialized = await CloudBaseService.instance.init();
+    if (!cloudBaseInitialized) {
+      debugPrint('⚠️ 腾讯云服务未配置，应用将以演示模式运行');
+    } else {
+      debugPrint('✅ 延迟初始化完成（音频 / 通知 / 云服务）');
+    }
+  });
 
   runApp(EnvInspectionApp(settingsProvider: settingsProvider));
 }
@@ -64,6 +69,10 @@ class EnvInspectionApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => IssueProvider()),
         ChangeNotifierProvider(create: (_) => ChatProvider()),
+        ChangeNotifierProvider(create: (_) => AnnouncementProvider()),
+        ChangeNotifierProvider(create: (_) => AiAnalysisProvider()),
+        // 云端字典（业务类型 / 隐患类别）：构造时读缓存、随后静默刷新，不阻塞启动
+        ChangeNotifierProvider(create: (_) => ConfigProvider()),
       ],
       child: Consumer<SettingsProvider>(
         builder: (context, settings, _) {

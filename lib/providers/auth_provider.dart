@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import '../config/constants.dart';
 import '../models/user.dart';
+import '../models/business_type.dart';
 import '../services/cloudbase_service.dart';
 
 class AuthProvider extends ChangeNotifier {
@@ -58,6 +59,8 @@ class AuthProvider extends ChangeNotifier {
         _currentUser = localUser;
         notifyListeners();
         print('📱 本地会话恢复成功: ${localUser.name}');
+        // token 只存在内存里，重启后必须重新换一次，否则云端请求等于没带身份
+        await _ensureSession(savedUsername, savedPassword);
         return true;
       }
     } catch (e) {
@@ -78,6 +81,7 @@ class AuthProvider extends ChangeNotifier {
         }
         notifyListeners();
         print('📱 云端会话恢复成功: ${cloudUser.name}');
+        await _ensureSession(savedUsername, savedPassword);
         return true;
       }
       // 云端找到用户但密码/状态不匹配，尝试本地（避免网络抖动导致退出）
@@ -269,6 +273,7 @@ class AuthProvider extends ChangeNotifier {
             role: u['role']?.toString() ?? 'inspector',
             status: u['status']?.toString() ?? 'active',
             isActive: u['isActive'] ?? true,
+            businessTypes: parseBusinessTypes(u['businessTypes']),
           )).toList();
           
           // 如果没有admin用户，添加默认admin
@@ -351,6 +356,7 @@ class AuthProvider extends ChangeNotifier {
             department: userData['department'] ?? '',
             status: userData['status'] ?? 'active',
             isActive: userData['isActive'] ?? true,
+            businessTypes: parseBusinessTypes(userData['businessTypes']),
           );
         }
       }
@@ -404,6 +410,7 @@ class AuthProvider extends ChangeNotifier {
             'department': user.department,
             'status': user.status,
             'isActive': user.isActive,
+            'businessTypes': user.businessTypes,
             'createdAt': DateTime.now().toIso8601String().split('T')[0],
           },
         }),
@@ -423,6 +430,19 @@ class AuthProvider extends ChangeNotifier {
   }
 
   /// 登录
+  /// 换取服务端 token + 同步科室上下文。
+  ///
+  /// 刻意做成尽力而为：token 只存在内存里，App 重启拿不到就等于没带。
+  /// 所以 restoreLogin / login 的成功分支都要重新换一次。
+  /// 失败一律静默 —— 离线场景下这是常态，不能因为没网就不让用户进系统。
+  Future<void> _ensureSession(String username, String password) async {
+    try {
+      await CloudBaseService.instance.acquireSession(username, password);
+    } catch (e) {
+      print('⚠️ 会话换取失败，按离线模式继续: $e');
+    }
+  }
+
   Future<bool> login(String username, String password) async {
     _isLoading = true;
     _error = null;
@@ -459,9 +479,21 @@ class AuthProvider extends ChangeNotifier {
           return false;
         }
 
+        // 已删除 / 已禁用账号禁止登录（云端校验分支此前缺少该拦截）
+        if (_currentUser!.status == 'deleted' ||
+            _currentUser!.status == 'disabled' ||
+            _currentUser!.isActive == false) {
+          _error = '账号已被删除或禁用，请联系管理员';
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
+
         // 保存登录会话（切后台后恢复）
         await _prefs?.setString('saved_login_username', username);
         await _prefs?.setString('saved_login_password', password);
+        // 换取服务端 token 并同步科室上下文。失败不影响离线可用性。
+        await _ensureSession(username, password);
 
         _isLoading = false;
         notifyListeners();
@@ -487,6 +519,7 @@ class AuthProvider extends ChangeNotifier {
         _currentUser = foundUser;
         await _prefs?.setString('saved_login_username', username);
         await _prefs?.setString('saved_login_password', password);
+        await _ensureSession(username, password);
         _isLoading = false;
         notifyListeners();
         return true;
@@ -507,6 +540,15 @@ class AuthProvider extends ChangeNotifier {
       }
 
       if (foundUser != null) {
+        // 离线兜底分支同样要拦截已删除 / 已禁用账号
+        if (foundUser.status == 'deleted' ||
+            foundUser.status == 'disabled' ||
+            foundUser.isActive == false) {
+          _error = '账号已被删除或禁用，请联系管理员';
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
         _currentUser = foundUser;
         await _prefs?.setString('saved_login_username', username);
         await _prefs?.setString('saved_login_password', password);
@@ -529,6 +571,7 @@ class AuthProvider extends ChangeNotifier {
     required String phone,
     required String department,
     required String role,
+    List<String>? businessTypes,
   }) async {
     _isLoading = true;
     _error = null;
@@ -563,6 +606,7 @@ class AuthProvider extends ChangeNotifier {
         department: department,
         status: 'pending',
         isActive: false,
+        businessTypes: businessTypes ?? const [],
       );
 
       // 同时保存到腾讯云和本地
@@ -628,12 +672,12 @@ class AuthProvider extends ChangeNotifier {
         final data = jsonDecode(response.body);
         if (data['code'] == 0 && data['data'] != null) {
           final cloudPending = (data['data'] as List)
-              .where((u) => 
-                  u['status'] == 'pending' || 
-                  u['isActive'] == false || 
-                  u['status'] == null || 
-                  u['status'] == ''
-              )
+              .where((u) =>
+                  (u['status'] == 'pending' ||
+                      u['isActive'] == false ||
+                      u['status'] == null ||
+                      u['status'] == '') &&
+                  u['status'] != 'deleted')
               .map((u) => User(
                     id: u['_id'] ?? '',
                     username: u['username'] ?? '',
@@ -644,6 +688,7 @@ class AuthProvider extends ChangeNotifier {
                     department: u['department'] ?? '',
                     status: u['status'] ?? 'pending',
                     isActive: u['isActive'] ?? false,
+                    businessTypes: parseBusinessTypes(u['businessTypes']),
                   ))
               .toList();
           
@@ -730,17 +775,21 @@ class AuthProvider extends ChangeNotifier {
               role: u['role']?.toString() ?? 'inspector',
               status: u['status']?.toString() ?? 'active',
               isActive: u['isActive'] ?? true,
+              businessTypes: parseBusinessTypes(u['businessTypes']),
             );
             
-            final localIndex = _localUsers.indexWhere((u) => u.username == username);
-            if (localIndex == -1) {
-              _localUsers.add(cloudUser);
-            } else {
-              _localUsers[localIndex] = cloudUser;
-            }
+          final localIndex = _localUsers.indexWhere((u) => u.username == username);
+          if (localIndex == -1) {
+            _localUsers.add(cloudUser);
+          } else {
+            _localUsers[localIndex] = cloudUser;
           }
-          
-          print('✅ 从云端同步 ${cloudUsers.length} 个用户到本地');
+        }
+
+        // 只剔除已删除用户；已禁用（disabled）用户需保留，否则管理端无法再启用
+        _localUsers.removeWhere((u) => u.status == 'deleted');
+
+        print('✅ 从云端同步 ${cloudUsers.length} 个用户到本地');
         } else {
           print('⚠️ 云端用户列表为空');
         }
@@ -766,6 +815,7 @@ class AuthProvider extends ChangeNotifier {
     required String phone,
     required String department,
     required String role,
+    List<String>? businessTypes,
   }) async {
     try {
       // 检查是否已存在
@@ -792,6 +842,7 @@ class AuthProvider extends ChangeNotifier {
         department: department,
         status: 'active',
         isActive: true,
+        businessTypes: businessTypes ?? const [],
       );
 
       // 同时保存到腾讯云
@@ -941,31 +992,36 @@ class AuthProvider extends ChangeNotifier {
   }
 
 
-  /// 删除用户（云端禁用，本地删除）
+  /// 删除用户（本地移除 + 云端软删除，使其从所有列表消失且无法登录）
+  ///
+  /// 说明：云端云函数目前未部署 remove 物理删除 action，
+  /// 故采用软删除（status=deleted / isActive=false），APP 侧在
+  /// fetchAllUsersFromCloud / getPendingUsers / 用户管理列表 统一过滤已删除用户，
+  /// 体验上等同“已删除”。若需物理删行，需部署含 remove action 的云函数。
   Future<bool> deleteUser(String username) async {
     try {
       print('deleteUser: ' + username);
 
       _localUsers.removeWhere((u) => u.username == username);
       await _saveLocalUsers();
-      print('local user deleted');
+      print('local user removed');
 
-      // 同步更新到腾讯云 - query 和 data 作为独立参数传递
+      // 云端软删除：标记为 deleted，并禁用登录
       final cloudService = CloudBaseService.instance;
       final result = await cloudService.callApi(
         'update',
         collection: 'users',
         query: {'username': username},
         data: {
-          'status': 'disabled',
+          'status': 'deleted',
           'isActive': false,
-          'updatedAt': DateTime.now().toIso8601String(),
+          'deletedAt': DateTime.now().toIso8601String(),
         },
       );
       print('📋 deleteUser 云端结果: code=${result['code']}, msg=${result['message']}');
 
       notifyListeners();
-      return true;
+      return result['code'] == 0;
     } catch (e) {
       print('deleteUser error: ' + e.toString());
       notifyListeners();
@@ -980,6 +1036,7 @@ class AuthProvider extends ChangeNotifier {
     required String phone,
     required String department,
     required String role,
+    List<String>? businessTypes,
   }) async {
     try {
       print('adminUpdateUser: ' + username);
@@ -990,6 +1047,10 @@ class AuthProvider extends ChangeNotifier {
         _localUsers[localIndex].phone = phone;
         _localUsers[localIndex].department = department;
         _localUsers[localIndex].role = role;
+        // 传 null 表示本次不改业务类型（避免其它调用方误清空）
+        if (businessTypes != null) {
+          _localUsers[localIndex].businessTypes = businessTypes;
+        }
         await _saveLocalUsers();
         print('local user updated');
       }
@@ -1004,6 +1065,7 @@ class AuthProvider extends ChangeNotifier {
           'phone': phone,
           'department': department,
           'role': role,
+          if (businessTypes != null) 'businessTypes': businessTypes,
           'updatedAt': DateTime.now().toIso8601String(),
         },
       );
@@ -1043,7 +1105,11 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
-  bool updateProfile({required String name, required String phone}) {
+  bool updateProfile({
+    required String name,
+    required String phone,
+    List<String>? businessTypes,
+  }) {
     if (_currentUser == null) return false;
 
     try {
@@ -1052,6 +1118,10 @@ class AuthProvider extends ChangeNotifier {
 
       _localUsers[index].name = name;
       _localUsers[index].phone = phone;
+      // 传 null 表示本次不改业务类型；传值（含空数组=全部业务）则覆盖
+      if (businessTypes != null) {
+        _localUsers[index].businessTypes = businessTypes;
+      }
       _currentUser = _localUsers[index];
       _saveLocalUsers();
       
@@ -1099,6 +1169,7 @@ class AuthProvider extends ChangeNotifier {
                 'updateData': {
                   'name': user.name,
                   'phone': user.phone,
+                  'businessTypes': user.businessTypes,
                 },
               },
             }),

@@ -4,6 +4,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/issue.dart';
+import '../models/business_type.dart';
 import '../models/user.dart';
 import '../services/cloudbase_service.dart';
 import '../services/audio_service.dart';
@@ -415,6 +416,9 @@ class IssueProvider extends ChangeNotifier {
               rectificationHistory: mergedRectificationHistory,
               // 合并云端和本地的驳回历史（去重后按时间排序）
               rejectionHistory: mergedRejectionHistory,
+              // 业务/科室：直接沿用云端反查结果（fromJson 已补全）
+              businessType: cloudIssue.businessType,
+              deptCode: cloudIssue.deptCode,
             ));
           } else {
             // 云端新增的记录
@@ -458,7 +462,9 @@ class IssueProvider extends ChangeNotifier {
         id: 'issue_001',
         title: '冷轧车间排水口COD超标',
         description: '冷轧车间排水口取样检测COD浓度为128mg/L，超出排放标准（100mg/L）28%',
-        category: IssueCategory.wastewater,
+        category: IssueCategory.envWastewater,
+        businessType: 'ENV',
+        deptCode: deptOfBusiness('ENV'),
         severity: SeverityLevel.critical,
         photos: [],
         location: '冷轧车间东侧排水口',
@@ -475,7 +481,9 @@ class IssueProvider extends ChangeNotifier {
         id: 'issue_002',
         title: '镀锌线粉尘收集装置故障',
         description: '镀锌线运行时噪音超标，疑似风机故障',
-        category: IssueCategory.wastegas,
+        category: IssueCategory.envWastegas,
+        businessType: 'ENV',
+        deptCode: deptOfBusiness('ENV'),
         severity: SeverityLevel.serious,
         photos: [],
         location: '镀锌车间2号生产线',
@@ -492,7 +500,9 @@ class IssueProvider extends ChangeNotifier {
         id: 'issue_003',
         title: '危废仓库标识牌老化',
         description: '危废仓库门口标识牌老化脱落，需更换',
-        category: IssueCategory.solidWaste,
+        category: IssueCategory.envSolid,
+        businessType: 'ENV',
+        deptCode: deptOfBusiness('ENV'),
         severity: SeverityLevel.general,
         photos: [],
         location: '危废仓库门口',
@@ -509,7 +519,9 @@ class IssueProvider extends ChangeNotifier {
         id: 'issue_004',
         title: '污水处理站污泥含水率高',
         description: '污泥含水率超标，需要调整脱水设备参数',
-        category: IssueCategory.wastewater,
+        category: IssueCategory.envWastewater,
+        businessType: 'ENV',
+        deptCode: deptOfBusiness('ENV'),
         severity: SeverityLevel.serious,
         photos: [],
         location: '污水处理站',
@@ -535,13 +547,19 @@ class IssueProvider extends ChangeNotifier {
 
     // 同步新增到云端（先上传，获取云端返回的 _id）
     String? cloudId;
+    // 关键修复：本地 Issue 与云端 doc 必须使用同一个业务 id，
+    // 否则 loadIssues 之后 getIssueById(widget.issue.id) 会因 id 不匹配而查不到，
+    // 详情页回退到传入对象（在极端情况下可能丢失 photos 等字段）。
+    final String issueId = 'issue_${DateTime.now().millisecondsSinceEpoch}';
     try {
       final cloudService = CloudBaseService.instance;
       final cloudData = {
-        'id': 'issue_${DateTime.now().millisecondsSinceEpoch}',
+        'id': issueId,
         'title': issue.title,
         'description': issue.description,
         'category': issue.categoryName,
+        'businessType': issue.businessType,
+        'deptCode': issue.deptCode,
         'severity': issue.severityName,
         'status': 'pending',
         'location': issue.location,
@@ -562,7 +580,7 @@ class IssueProvider extends ChangeNotifier {
 
     // 创建本地 Issue 对象（含 cloudId）
     final newIssue = Issue(
-      id: 'issue_${DateTime.now().millisecondsSinceEpoch}',
+      id: issueId, // 与云端 doc 使用同一个业务 id
       cloudId: cloudId ?? '', // 保存云端 _id，用于后续更新
       title: issue.title,
       description: issue.description,
@@ -603,6 +621,8 @@ class IssueProvider extends ChangeNotifier {
         title: issue.title,
         description: issue.description,
         category: issue.category,
+        businessType: issue.businessType,
+        deptCode: issue.deptCode,
         severity: issue.severity,
         photos: issue.photos,
         location: issue.location,
@@ -669,6 +689,8 @@ class IssueProvider extends ChangeNotifier {
         title: issue.title,
         description: issue.description,
         category: issue.category,
+        businessType: issue.businessType,
+        deptCode: issue.deptCode,
         severity: issue.severity,
         photos: issue.photos,
         location: issue.location,
@@ -736,6 +758,8 @@ class IssueProvider extends ChangeNotifier {
         title: issue.title,
         description: issue.description,
         category: issue.category,
+        businessType: issue.businessType,
+        deptCode: issue.deptCode,
         severity: issue.severity,
         photos: issue.photos,
         location: issue.location,
@@ -806,6 +830,8 @@ class IssueProvider extends ChangeNotifier {
         title: issue.title,
         description: issue.description,
         category: issue.category,
+        businessType: issue.businessType,
+        deptCode: issue.deptCode,
         severity: issue.severity,
         photos: issue.photos,
         location: issue.location,
@@ -917,6 +943,8 @@ class IssueProvider extends ChangeNotifier {
         title: issue.title,
         description: issue.description,
         category: issue.category,
+        businessType: issue.businessType,
+        deptCode: issue.deptCode,
         severity: issue.severity,
         photos: issue.photos,
         location: issue.location,
@@ -988,10 +1016,41 @@ class IssueProvider extends ChangeNotifier {
   }
 
   /// 根据 ID 获取单个隐患（用于详情页获取最新数据）
+  /// 同时按业务 id 与云端 cloudId 匹配，避免本地/云端 id 不一致时查不到。
   Issue? getIssueById(String issueId) {
     try {
-      return _issues.firstWhere((i) => i.id == issueId);
+      return _issues.firstWhere((i) => i.id == issueId || i.cloudId == issueId);
     } catch (e) {
+      // 退而求其次：用 cloudId 反查（传入的可能是云端 _id）
+      for (final i in _issues) {
+        if (i.cloudId.isNotEmpty && i.cloudId == issueId) return i;
+      }
+      return null;
+    }
+  }
+
+  /// 绕过 Provider 缓存，直接从云端拉取单条隐患最新数据（含照片）。
+  /// 用于兜底：当详情页发现 _issue.photos 为空时，直接命中网关原文。
+  Future<Issue?> fetchIssueFromCloud(String issueId) async {
+    try {
+      final cloudService = CloudBaseService.instance;
+      final result = await cloudService.callApi(
+        'query',
+        collection: 'hazards',
+        query: {
+          'isDeleted': {'\$ne': true},
+          'id': issueId,
+        },
+      );
+      if (result['code'] == 0 && result['data'] != null && result['data'] is List) {
+        final list = result['data'] as List;
+        if (list.isNotEmpty) {
+          return Issue.fromJson(list.first as Map<String, dynamic>);
+        }
+      }
+      return null;
+    } catch (e) {
+      print('❌ fetchIssueFromCloud 失败: $e');
       return null;
     }
   }
@@ -1113,6 +1172,10 @@ class IssueProvider extends ChangeNotifier {
         } catch (e) {}
       }
 
+      // 由类别反查业务/科室（编辑旧隐患保存时一并回填，确保历史数据补齐）
+      final String effBiz = businessOfCategoryName(categoryNameOf(newCategory));
+      final String effDept = deptOfBusiness(effBiz);
+
       // 解析 severity
       SeverityLevel newSeverity = issue.severity;
       if (severity != null) {
@@ -1131,6 +1194,8 @@ class IssueProvider extends ChangeNotifier {
         title: title ?? issue.title,
         description: description ?? issue.description,
         category: newCategory,
+        businessType: effBiz,
+        deptCode: effDept,
         severity: newSeverity,
         photos: issue.photos,
         location: location ?? issue.location,
@@ -1158,6 +1223,9 @@ class IssueProvider extends ChangeNotifier {
       if (title != null) newData['title'] = title;
       if (description != null) newData['description'] = description;
       if (category != null) newData['category'] = category;
+      // 编辑保存时回填业务/科室（历史隐患无此字段则补齐）
+      newData['businessType'] = effBiz;
+      newData['deptCode'] = effDept;
       if (severity != null) newData['severity'] = severity;
       if (deadline != null) newData['deadline'] = deadline;
       if (deadline != null) newData['dueDate'] = deadline;

@@ -24,6 +24,10 @@ class AppConstants {
   static const String usersCollection = 'users';
   static const String issuesCollection = 'issues';
   static const String departmentsCollection = 'departments';
+  // 公告集合：单集合，用 docType 区分 announcement / read / audit（与电脑端一致）
+  static const String announcementCollection = 'announcement';
+  // 字典配置集合：两条文档 business_types / issue_categories（电脑端维护，手机端只读）
+  static const String appConfigCollection = 'appConfig';
   
   // 问题分类
   static const Map<String, String> issueCategories = {
@@ -37,8 +41,8 @@ class AppConstants {
   // 严重程度
   static const Map<String, String> severityLevels = {
     'general': '一般',
-    'serious': '较重',
-    'critical': '严重'
+    'serious': '较大',
+    'critical': '重大'
   };
   
   // 问题状态

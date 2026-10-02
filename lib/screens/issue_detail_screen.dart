@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/issue.dart';
+import '../models/business_type.dart';
 import '../models/user.dart';
 import '../models/chat_message.dart';
 import '../providers/issue_provider.dart';
@@ -15,6 +16,7 @@ import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../services/cloudbase_service.dart';
 import '../utils/phone_service.dart';
+import '../utils/media_permission.dart';
 import 'chat_list_screen.dart';
 
 class IssueDetailScreen extends StatefulWidget {
@@ -39,13 +41,64 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     });
   }
 
-  void _refreshIssueFromProvider() {
+  void _refreshIssueFromProvider() async {
     final provider = context.read<IssueProvider>();
-    final freshIssue = provider.getIssueById(widget.issue.id);
+    // 先按业务 id 查，再按云端 cloudId 查，确保取到云端最新数据（含照片）
+    Issue? freshIssue = provider.getIssueById(widget.issue.id) ??
+        (widget.issue.cloudId.isNotEmpty
+            ? provider.getIssueById(widget.issue.cloudId)
+            : null);
+
+    // 防御：Provider 中的副本若丢失了照片，优先使用传入对象的照片
+    if (freshIssue != null &&
+        freshIssue.photos.isEmpty &&
+        widget.issue.photos.isNotEmpty) {
+      freshIssue = Issue(
+        id: freshIssue.id,
+        cloudId: freshIssue.cloudId,
+        title: freshIssue.title,
+        description: freshIssue.description,
+        category: freshIssue.category,
+        severity: freshIssue.severity,
+        photos: widget.issue.photos,
+        location: freshIssue.location,
+        department: freshIssue.department,
+        reporterId: freshIssue.reporterId,
+        reporterName: freshIssue.reporterName,
+        assigneeId: freshIssue.assigneeId,
+        assigneeName: freshIssue.assigneeName,
+        deadline: freshIssue.deadline,
+        status: freshIssue.status,
+        rectificationPhotos: freshIssue.rectificationPhotos,
+        rectificationNote: freshIssue.rectificationNote,
+        rejectionNote: freshIssue.rejectionNote,
+        acceptanceNote: freshIssue.acceptanceNote,
+        createdAt: freshIssue.createdAt,
+        updatedAt: freshIssue.updatedAt,
+        closedAt: freshIssue.closedAt,
+        rectificationHistory: freshIssue.rectificationHistory,
+        rejectionHistory: freshIssue.rejectionHistory,
+      );
+    }
+
     if (freshIssue != null && mounted) {
       setState(() {
-        _issue = freshIssue;
+        _issue = freshIssue!;
       });
+    }
+
+    // 兜底：如果按 id 仍拿不到带照片的最新数据，直接查网关单条记录
+    if ((_issue.photos.isEmpty && widget.issue.id.isNotEmpty) ||
+        (freshIssue == null && widget.issue.id.isNotEmpty)) {
+      print('🛡️ 详情页兜底：直接从云端拉取 ${widget.issue.id}');
+      final directIssue = await provider.fetchIssueFromCloud(widget.issue.id);
+      if (directIssue != null &&
+          directIssue.photos.isNotEmpty &&
+          mounted) {
+        setState(() {
+          _issue = directIssue;
+        });
+      }
     }
   }
 
@@ -136,7 +189,44 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     return Consumer<IssueProvider>(
       builder: (context, provider, child) {
         // 当 Provider 数据更新时，重新从 Provider 获取
-        final freshIssue = provider.getIssueById(widget.issue.id);
+        // 同样兼容业务 id 与云端 cloudId，避免 id 不一致时回退到无照片的快照
+        Issue? freshIssue = provider.getIssueById(widget.issue.id) ??
+            (widget.issue.cloudId.isNotEmpty
+                ? provider.getIssueById(widget.issue.cloudId)
+                : null);
+
+        // 防御：Provider 副本若丢失了照片，优先保留传入对象的照片
+        if (freshIssue != null &&
+            freshIssue.photos.isEmpty &&
+            _issue.photos.isNotEmpty) {
+          freshIssue = Issue(
+            id: freshIssue.id,
+            cloudId: freshIssue.cloudId,
+            title: freshIssue.title,
+            description: freshIssue.description,
+            category: freshIssue.category,
+            severity: freshIssue.severity,
+            photos: _issue.photos,
+            location: freshIssue.location,
+            department: freshIssue.department,
+            reporterId: freshIssue.reporterId,
+            reporterName: freshIssue.reporterName,
+            assigneeId: freshIssue.assigneeId,
+            assigneeName: freshIssue.assigneeName,
+            deadline: freshIssue.deadline,
+            status: freshIssue.status,
+            rectificationPhotos: freshIssue.rectificationPhotos,
+            rectificationNote: freshIssue.rectificationNote,
+            rejectionNote: freshIssue.rejectionNote,
+            acceptanceNote: freshIssue.acceptanceNote,
+            createdAt: freshIssue.createdAt,
+            updatedAt: freshIssue.updatedAt,
+            closedAt: freshIssue.closedAt,
+            rectificationHistory: freshIssue.rectificationHistory,
+            rejectionHistory: freshIssue.rejectionHistory,
+          );
+        }
+
         if (freshIssue != null) {
           _issue = freshIssue;
         }
@@ -319,6 +409,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                     child: Column(
                       children: [
                         _buildInfoRow('问题类型', _issue.categoryName),
+                        _buildInfoRow('业务类型', businessNameOf(_issue.businessType)),
                         _buildInfoRow('严重程度', _issue.severityName),
                         _buildInfoRow('发现时间', _formatDate(_issue.createdAt)),
                         _buildInfoRow('整改期限', _formatDate(_issue.deadline)),
@@ -1658,6 +1749,8 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
 
   // 拍照（拍照后立即压缩）
   Future<File?> _takeRectificationPhoto() async {
+    if (!await MediaPermissionHelper.ensure(context, ImageSource.camera)) return null;
+    if (!mounted) return null;
     try {
       final XFile? photo = await ImagePicker().pickImage(
         source: ImageSource.camera,
@@ -1686,6 +1779,8 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
 
   // 从相册选择照片
   Future<File?> _pickRectificationPhoto() async {
+    if (!await MediaPermissionHelper.ensure(context, ImageSource.gallery)) return null;
+    if (!mounted) return null;
     try {
       final XFile? photo = await ImagePicker().pickImage(
         source: ImageSource.gallery,
@@ -2641,14 +2736,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                     border: OutlineInputBorder(),
                   ),
                   items: IssueCategory.values.map((cat) {
-                    String name;
-                    switch (cat) {
-                      case IssueCategory.wastewater: name = '废水排放';
-                      case IssueCategory.wastegas: name = '废气排放';
-                      case IssueCategory.solidWaste: name = '固废管理';
-                      case IssueCategory.noise: name = '噪音污染';
-                      case IssueCategory.other: name = '其他';
-                    }
+                    final name = categoryNameOf(cat);
                     return DropdownMenuItem(value: cat, child: Text(name));
                   }).toList(),
                   onChanged: (v) => setState(() => selectedCategory = v!),
@@ -2661,12 +2749,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                     border: OutlineInputBorder(),
                   ),
                   items: SeverityLevel.values.map((sev) {
-                    String name;
-                    switch (sev) {
-                      case SeverityLevel.general: name = '一般';
-                      case SeverityLevel.serious: name = '较重';
-                      case SeverityLevel.critical: name = '严重';
-                    }
+                    final name = severityNameOf(sev);
                     return DropdownMenuItem(value: sev, child: Text(name));
                   }).toList(),
                   onChanged: (v) => setState(() => selectedSeverity = v!),

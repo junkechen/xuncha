@@ -3,10 +3,14 @@
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../config/dept.dart';
 import '../providers/auth_provider.dart';
 import '../providers/issue_provider.dart';
 import '../providers/chat_provider.dart';
+import '../providers/announcement_provider.dart';
 import '../services/notification_service.dart';
+import 'announcement_list_screen.dart';
+import 'hazard_scan_screen.dart';
 import 'add_issue_screen.dart';
 import 'stats_screen.dart';
 import 'issue_list_screen.dart';
@@ -23,9 +27,15 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
 
+  // 【USE-03 / USE-08】当前激活科室与可切换的科室列表。
+  // 科室是身份属性（服务端下发），只有归属多个科室的人才看得到切换入口。
+  String _deptCode = AppDept.defaultCode;
+  List<String> _availableDepts = const [AppDept.defaultCode];
+
   @override
   void initState() {
     super.initState();
+    _loadDept();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         // 进入首页时清除所有残留的 SnackBar
@@ -38,6 +48,15 @@ class _HomeScreenState extends State<HomeScreen> {
         
         // 加载问题并在新问题出现时播放提示音
         context.read<IssueProvider>().loadIssues(playSound: true);
+
+        // 公告预热：进入首页即「先读缓存再静默刷新」，
+        // 这样首页角标能立刻显示未读数，进入公告页时首屏也已有内容。
+        final annProvider = context.read<AnnouncementProvider>();
+        Future.microtask(() async {
+          await annProvider.setCurrentUser(auth.currentUser?.id ?? '');
+          await annProvider.loadFirstPage();
+        });
+
         // 初始化催办通知轮询
         _initChat();
         // 关键修复：进入首页时，把所有催办/隐患通知强制标记为已读（云端+本地）
@@ -49,6 +68,81 @@ class _HomeScreenState extends State<HomeScreen> {
         _requestNotificationPermission();
       }
     });
+  }
+
+  /// 读取当前科室与可访问科室列表（登录时已同步到本地）
+  Future<void> _loadDept() async {
+    final cur = await AppDept.current();
+    final user = context.read<AuthProvider>().currentUser;
+    final available = AppDept.availableFor(user?.deptCode, user?.deptCodes);
+    if (mounted) {
+      setState(() {
+        _deptCode = available.contains(cur) ? cur : available.first;
+        _availableDepts = available;
+      });
+    }
+  }
+
+  /// 【USE-08】切换科室：先二次确认未提交内容会丢失，再持久化并刷新列表。
+  /// 不清缓存会读到另一个科室的旧数据 —— 这与电脑端切换必须清缓存是同一道理。
+  Future<void> _switchDept() async {
+    if (_availableDepts.length <= 1) return;
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('切换科室'),
+        content: const Text('切换后当前未提交的草稿将丢失，确定切换吗？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          ..._availableDepts.map((code) => TextButton(
+            onPressed: () => Navigator.pop(ctx, code),
+            child: Text(AppDept.info(code).name),
+          )),
+        ],
+      ),
+    );
+    if (chosen == null || chosen == _deptCode) return;
+
+    await AppDept.setCurrent(chosen);
+    if (mounted) {
+      setState(() => _deptCode = chosen);
+      // 重新拉取隐患与公告，避免残留对方科室数据
+      context.read<IssueProvider>().loadIssues();
+      final ann = context.read<AnnouncementProvider>();
+      await ann.setCurrentUser(context.read<AuthProvider>().currentUser?.id ?? '');
+      await ann.loadFirstPage();
+      // 顶栏徽标刷新
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已切换到${AppDept.info(chosen).name}'), duration: const Duration(seconds: 2)),
+      );
+    }
+  }
+
+  /// 顶部科室徽标（环保绿🌿 / 安全橙⚠），常驻显示
+  Widget _buildDeptBadge() {
+    final info = AppDept.info(_deptCode);
+    final canSwitch = _availableDepts.length > 1;
+    return GestureDetector(
+      onTap: canSwitch ? _switchDept : null,
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: Color(info.color),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(info.icon, style: const TextStyle(fontSize: 14)),
+            const SizedBox(width: 4),
+            Text(info.short,
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+            if (canSwitch) const Icon(Icons.arrow_drop_down, color: Colors.white, size: 16),
+          ],
+        ),
+      ),
+    );
   }
 
   /// 申请通知权限（Android 13+）
@@ -156,7 +250,69 @@ class _HomeScreenState extends State<HomeScreen> {
           ? AppBar(
               title: const Text('隐患列表'),
               centerTitle: true,
+              leading: _buildDeptBadge(),
               actions: [
+                // AI 隐患识别入口（随手拍快速判断，可转为正式上报）
+                IconButton(
+                  icon: const Icon(Icons.auto_awesome_outlined),
+                  tooltip: 'AI 隐患识别',
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const HazardScanScreen(),
+                      ),
+                    );
+                  },
+                ),
+                // 公告入口 - 带未读角标
+                Consumer<AnnouncementProvider>(
+                  builder: (context, annProvider, child) {
+                    final unread = annProvider.unreadCount;
+                    return Stack(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.campaign_outlined),
+                          tooltip: '公告',
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    const AnnouncementListScreen(),
+                              ),
+                            );
+                          },
+                        ),
+                        if (unread > 0)
+                          Positioned(
+                            right: 8,
+                            top: 8,
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                              ),
+                              constraints: const BoxConstraints(
+                                minWidth: 16,
+                                minHeight: 16,
+                              ),
+                              child: Text(
+                                unread > 99 ? '99+' : '$unread',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
                 // 催办通知入口 - 始终显示
                 Consumer<ChatProvider>(
                   builder: (context, chatProvider, child) {

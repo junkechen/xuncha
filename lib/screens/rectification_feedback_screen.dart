@@ -12,6 +12,7 @@ import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../models/issue.dart';
 import '../models/chat_message.dart';
+import '../utils/media_permission.dart';
 
 class RectificationFeedbackScreen extends StatefulWidget {
   final String issueId;
@@ -107,6 +108,8 @@ class _RectificationFeedbackScreenState extends State<RectificationFeedbackScree
 
   /// 拍照
   Future<void> _takePhoto() async {
+    if (!await MediaPermissionHelper.ensure(context, ImageSource.camera)) return;
+    if (!mounted) return;
     final XFile? image = await _imagePicker.pickImage(
       source: ImageSource.camera,
       imageQuality: 85,
@@ -124,6 +127,8 @@ class _RectificationFeedbackScreenState extends State<RectificationFeedbackScree
 
   /// 从相册选择
   Future<void> _pickFromGallery() async {
+    if (!await MediaPermissionHelper.ensure(context, ImageSource.gallery)) return;
+    if (!mounted) return;
     final List<XFile> images = await _imagePicker.pickMultiImage(
       imageQuality: 85,
       maxWidth: 1920,

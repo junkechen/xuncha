@@ -8,7 +8,9 @@ import '../providers/issue_provider.dart';
 import '../providers/settings_provider.dart';
 import '../models/user.dart';
 import '../models/issue.dart';
-import '../providers/issue_provider.dart';
+import '../models/business_type.dart';
+import '../widgets/business_type_selector.dart';
+import '../services/cloudbase_service.dart';
 import '../services/audio_service.dart';
 import 'issue_detail_screen.dart';
 
@@ -35,9 +37,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _auditNotify = true;
   bool _dailyReport = false;
 
+  // 【D-5 修复】车间/部门下拉统一从 departments 主数据加载，避免三处硬编码列表不一致。
+  List<String> _departmentOptions = const [];
+
   @override
   void initState() {
     super.initState();
+    _loadDepartments();
     // 初始化时从 SettingsProvider 读取当前值
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final settings = context.read<SettingsProvider>();
@@ -55,6 +61,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _dailyReport = settings.dailyReport;
       });
     });
+  }
+
+  /// 从云端 departments 主数据加载车间列表（失败不影响其它功能，降级到内置兜底）
+  Future<void> _loadDepartments() async {
+    try {
+      final list = await CloudBaseService.instance.queryDepartments();
+      final names = list
+          .map((d) => (d['name'] ?? d['department'] ?? '').toString())
+          .where((n) => n.isNotEmpty)
+          .toSet()
+          .toList();
+      if (names.isNotEmpty && mounted) {
+        setState(() => _departmentOptions = names);
+      }
+    } catch (e) {
+      print('⚠️ 加载部门主数据失败（使用兜底列表）: $e');
+    }
   }
 
   @override
@@ -155,6 +178,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   fontSize: 12,
                                 ),
                               ),
+                              const SizedBox(height: 6),
+                              BusinessTypeChips(
+                                user?.businessTypes ?? const [],
+                                dense: true,
+                              ),
                             ],
                           ),
                         ),
@@ -252,6 +280,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         _buildInfoRow('部门', user?.department ?? '-'),
                         const Divider(),
                         _buildInfoRow('角色', user?.roleName ?? '-'),
+                        const Divider(),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text('业务类型',
+                                  style: TextStyle(color: Colors.grey[600])),
+                              BusinessTypeChips(
+                                user?.businessTypes ?? const [],
+                                dense: true,
+                              ),
+                            ],
+                          ),
+                        ),
                         const Divider(),
                         _buildInfoRow('账号状态', user?.isActive == true ? '正常' : '停用'),
                       ],
@@ -890,9 +933,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('版本: v3.7.4'),
+            Text('版本: v3.7.6'),
             SizedBox(height: 8),
-            Text('构建: 2026-07-23'),
+            Text('构建: 2026-09-04'),
             SizedBox(height: 8),
             Text('© 2026 冠洲安环部'),
             SizedBox(height: 16),
@@ -920,66 +963,78 @@ class _ProfileScreenState extends State<ProfileScreen> {
     
     final nameController = TextEditingController(text: user?.name ?? '');
     final phoneController = TextEditingController(text: user?.phone ?? '');
+    List<String> selectedBiz =
+        List<String>.from(user?.businessTypes ?? const []);
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.edit, color: Color(0xFF10B981)),
-            SizedBox(width: 8),
-            Text('编辑个人信息'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '姓名',
-                prefixIcon: Icon(Icons.person),
-              ),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: phoneController,
-              keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: '手机号',
-                prefixIcon: Icon(Icons.phone),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.edit, color: Color(0xFF10B981)),
+              SizedBox(width: 8),
+              Text('编辑个人信息'),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () async {
-              // 调用更新个人信息（异步）
-              final success = await auth.updateProfile(
-                name: nameController.text.trim(),
-                phone: phoneController.text.trim(),
-              );
-              if (!context.mounted) return;
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(success ? '个人信息已更新' : '更新失败'),
-                  backgroundColor: success ? Colors.green : Colors.red,
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: '姓名',
+                    prefixIcon: Icon(Icons.person),
+                  ),
                 ),
-              );
-            },
-            style: ElevatedButton.styleFrom(
-              foregroundColor: Colors.white,
-              backgroundColor: const Color(0xFF10B981),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: phoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: '手机号',
+                    prefixIcon: Icon(Icons.phone),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                BusinessTypeSelector(
+                  selected: selectedBiz,
+                  onChanged: (next) => setDialogState(() => selectedBiz = next),
+                ),
+              ],
             ),
-            child: const Text('保存'),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                // 调用更新个人信息（异步）
+                final success = await auth.updateProfile(
+                  name: nameController.text.trim(),
+                  phone: phoneController.text.trim(),
+                  businessTypes: selectedBiz,
+                );
+                if (!context.mounted) return;
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(success ? '个人信息已更新' : '更新失败'),
+                    backgroundColor: success ? Colors.green : Colors.red,
+                  ),
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: const Color(0xFF10B981),
+              ),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1018,8 +1073,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final passwordController = TextEditingController();
     String selectedDept = '安全保卫部';
     String selectedRole = 'inspector';
+    // 与桌面端一致：新增用户默认全选业务类型
+    List<String> selectedBiz = List<String>.from(kBusinessAllCodes);
 
-    final departments = ['安全保卫部', '生产车间', '仓储物流部', '环保部门', '技术部', '设备部'];
+    // 【D-5 修复】统一从 departments 主数据加载；网络不可用或为空时降级到内置兜底列表
+    final departments = _departmentOptions.isNotEmpty
+        ? _departmentOptions
+        : ['安全保卫部', '生产车间', '仓储物流部', '环保部门', '技术部', '设备部'];
     final roles = [
       {'value': 'inspector', 'label': '巡检员'},
       {'value': 'leader', 'label': '部门领导'},
@@ -1093,6 +1153,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   items: roles.map((r) => DropdownMenuItem(value: r['value'], child: Text(r['label']!))).toList(),
                   onChanged: (v) => setDialogState(() => selectedRole = v!),
                 ),
+                const SizedBox(height: 12),
+                BusinessTypeSelector(
+                  selected: selectedBiz,
+                  onChanged: (next) => setDialogState(() => selectedBiz = next),
+                ),
               ],
             ),
           ),
@@ -1124,6 +1189,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     phone: phoneController.text.trim(),
                     department: selectedDept,
                     role: selectedRole,
+                    businessTypes: selectedBiz,
                   );
 
                   if (success) {
@@ -1237,7 +1303,10 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
         setState(() {
           _pendingUsers = pending;
           // 过滤掉pending状态的用户，但保留其他所有用户（包括admin以外的所有人）
-          _allUsers = all.where((u) => u.status != 'pending').toList();
+          // 过滤掉 pending 与已删除用户；disabled 需保留以便管理员重新启用
+          _allUsers = all
+              .where((u) => u.status != 'pending' && u.status != 'deleted')
+              .toList();
           _isLoading = false;
         });
         print('✅ 用户列表刷新完成: pending=${_pendingUsers.length}, all=${_allUsers.length}');
@@ -1635,7 +1704,15 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
                     child: Text(user.name.isNotEmpty ? user.name.substring(0, 1) : '?'),
                   ),
                   title: Text(user.name),
-                  subtitle: Text('${user.department} - ${user.roleName}'),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('${user.department} - ${user.roleName}'),
+                      const SizedBox(height: 4),
+                      BusinessTypeChips(user.businessTypes, dense: true),
+                    ],
+                  ),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1747,7 +1824,15 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
                       _buildStatusBadge(user.status),
                     ],
                   ),
-                  subtitle: Text('${user.department} - ${user.roleName}'),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('${user.department} - ${user.roleName}'),
+                      const SizedBox(height: 4),
+                      BusinessTypeChips(user.businessTypes, dense: true),
+                    ],
+                  ),
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1838,6 +1923,7 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
     final deptController = TextEditingController(text: user.department);
     // user.role 返回 UserRole enum，需要转换为字符串
     String selectedRole = user.role.name;
+    List<String> selectedBiz = List<String>.from(user.businessTypes);
 
     showDialog(
       context: context,
@@ -1898,6 +1984,11 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
                     }
                   },
                 ),
+                const SizedBox(height: 12),
+                BusinessTypeSelector(
+                  selected: selectedBiz,
+                  onChanged: (next) => setDialogState(() => selectedBiz = next),
+                ),
               ],
             ),
           ),
@@ -1915,6 +2006,7 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
                   phoneController.text,
                   deptController.text,
                   selectedRole,
+                  selectedBiz,
                 );
               },
               style: ElevatedButton.styleFrom(
@@ -1935,6 +2027,7 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
     String phone,
     String department,
     String role,
+    List<String> businessTypes,
   ) async {
     setState(() => _isLoading = true);
 
@@ -1945,6 +2038,7 @@ class _UserManagementSheetState extends State<_UserManagementSheet> {
         phone: phone,
         department: department,
         role: role,
+        businessTypes: businessTypes,
       );
 
       if (mounted) {

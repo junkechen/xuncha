@@ -8,6 +8,7 @@ import '../providers/issue_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../models/issue.dart';
+import '../models/business_type.dart';
 import '../models/user.dart';
 import '../models/chat_message.dart';
 import 'issue_detail_screen.dart';
@@ -529,6 +530,22 @@ class _IssueListScreenState extends State<IssueListScreen> {
                     style: const TextStyle(
                       color: Colors.grey,
                       fontSize: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Color(businessColorOf(issue.businessType)).withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    businessNameOf(issue.businessType),
+                    style: TextStyle(
+                      color: Color(businessColorOf(issue.businessType)),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ),

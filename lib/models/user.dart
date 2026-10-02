@@ -1,6 +1,8 @@
 // lib/models/user.dart
 // 用户数据模型 - 完整版
 
+import 'business_type.dart';
+
 enum UserRole { admin, inspector, rectifier, supervisor, viewer }
 
 class User {
@@ -15,6 +17,19 @@ class User {
   String? avatar;
   bool isActive;
 
+  /// 所属科室编码（JN=环保节能科 / AQ=安全科）。
+  /// 由服务端下发，不由用户选择 —— 科室是身份属性，不是会话选项。
+  /// 存量用户尚未回填时服务端会兜底给 JN。
+  String deptCode;
+
+  /// 可访问的科室列表。长度 > 1 时才显示切换入口。
+  List<String> deptCodes;
+
+  /// 业务归属标签（SAFE / ENERGY / SITE / EQUIP），可多选。
+  /// 仅作展示与统计维度，不参与数据过滤——数据可见范围由 deptCode 决定。
+  /// 空数组表示「全部业务」。
+  List<String> businessTypes;
+
   User({
     required this.id,
     required this.username,
@@ -26,7 +41,13 @@ class User {
     this.status = 'active',
     this.avatar,
     this.isActive = true,
-  }) : _roleString = role;
+    String? deptCode,
+    List<String>? deptCodes,
+    List<String>? businessTypes,
+  })  : _roleString = role,
+        deptCode = deptCode ?? '',
+        deptCodes = deptCodes ?? const [],
+        businessTypes = businessTypes ?? const [];
 
   UserRole get role {
     switch (_roleString) {
@@ -78,10 +99,23 @@ class User {
       'status': status,
       'avatar': avatar,
       'isActive': isActive,
+      'deptCode': deptCode,
+      'deptCodes': deptCodes,
+      'businessTypes': businessTypes,
     };
   }
 
   factory User.fromJson(Map<String, dynamic> json) {
+    // deptCodes 优先取服务端在登录返回体顶层给的数组；
+    // 兼容直接从 user 文档上读（迁移后 users 表会带这个字段）。
+    List<String> codes = const [];
+    final rawCodes = json['deptCodes'];
+    if (rawCodes is List) {
+      codes = rawCodes.map((e) => e.toString()).toList();
+    }
+    final single = json['deptCode']?.toString() ?? '';
+    if (codes.isEmpty && single.isNotEmpty) codes = [single];
+
     return User(
       id: json['_id'] ?? json['id'] ?? '',
       username: json['username'] ?? '',
@@ -93,6 +127,9 @@ class User {
       status: json['status'] ?? 'active',
       avatar: json['avatar'],
       isActive: json['isActive'] ?? true,
+      deptCode: single,
+      deptCodes: codes,
+      businessTypes: parseBusinessTypes(json['businessTypes']),
     );
   }
 }
