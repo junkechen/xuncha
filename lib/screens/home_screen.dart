@@ -9,6 +9,7 @@ import '../providers/issue_provider.dart';
 import '../providers/chat_provider.dart';
 import '../providers/announcement_provider.dart';
 import '../services/notification_service.dart';
+import '../services/update_service.dart';
 import 'announcement_list_screen.dart';
 import 'hazard_scan_screen.dart';
 import 'add_issue_screen.dart';
@@ -66,6 +67,10 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         // 申请系统通知权限（第一次进入首页时）
         _requestNotificationPermission();
+
+        // 登录后自动检查更新（手动登录 / 自动恢复登录均会进入首页触发）。
+        // 无更新或网络异常时静默返回，不打扰用户。
+        UpdateService.checkAndPrompt(context);
       }
     });
   }
