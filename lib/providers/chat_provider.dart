@@ -23,6 +23,10 @@ class ChatProvider extends ChangeNotifier {
   bool _isSending = false;
   String? _error;
   Set<String> _localReadIds = {};   // 本地已读消息ID（持久化，避免重复响铃）
+
+  // 本次登录时间：早于该时间的消息不再弹横幅/响铃（避免每次重新登录时
+  // 历史消息因轮询先于"登录标记已读"完成而被当成新消息重复提示）
+  DateTime _sessionStart = DateTime.now();
   
   // 新消息通知回调（UI层注册，收到新催办/隐患通知时触发弹窗）
   Function(ChatMessage)? onNewNotification;
@@ -37,19 +41,20 @@ class ChatProvider extends ChangeNotifier {
   String? get error => _error;
   
   /// 设置当前用户
-  void setCurrentUser(String userId, String userName) {
-    // 如果用户ID变化，清空旧消息，防止消息混淆
+  Future<void> setCurrentUser(String userId, String userName) async {
+    // 记录本次登录时间，并先加载本地已读记录（await，避免轮询竞态）
+    _sessionStart = DateTime.now();
     if (_currentUserId != userId) {
       print('🔄 用户切换: $_currentUserId -> $userId，清空旧消息');
       _messages.clear();
       _conversationMessages.clear();
     }
-    
+
     _currentUserId = userId;
     _currentUserName = userName;
-    
+
     // 加载本地已读消息ID（持久化，避免下次登录重复响铃）
-    _loadLocalReadIds();
+    await _loadLocalReadIds();
     
     notifyListeners();
     
@@ -232,10 +237,13 @@ class ChatProvider extends ChangeNotifier {
             
             // 每条发给自己的新消息都单独播放提示音
             for (var msg in result) {
-              if (!existingIds.contains(msg.id) && 
+              if (!existingIds.contains(msg.id) &&
                   !msg.id.startsWith('temp_') &&
                   msg.toUserId == _currentUserId &&
-                  !_localReadIds.contains(msg.id)) {  // 关键修复：本地已读的不响
+                  !_localReadIds.contains(msg.id) &&
+                  // 关键修复：早于本次登录时间的消息是历史消息，不弹横幅不响铃
+                  // （只静默合并进列表），避免每次重新登录都重复提示
+                  msg.createdAt.isAfter(_sessionStart)) {
                 // 隐患/催办通知使用警告音，普通消息使用普通提示音
                 if (msg.type == MessageType.issueNotify || 
                     msg.type == MessageType.reminder) {
